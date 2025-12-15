@@ -194,7 +194,9 @@ function App() {
     };
 
     const closePosition = async (coin) => {
-        if (!confirm(`Close ${coin} position?`)) return;
+        // FIXED: Added 'window.' to confirm()
+        if (!window.confirm(`Close ${coin} position?`)) return;
+
         try {
             await axios.post(`${API_BASE_URL}/close-position`, {
                 user_agent_private_key: agentWallet.privateKey,
