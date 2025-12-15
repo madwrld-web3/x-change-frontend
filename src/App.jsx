@@ -12,7 +12,8 @@ import {
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
-const API_BASE_URL = 'https://x-backend-production-c71b.up.railway.app';
+// Use environment variable with fallback
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://x-backend-production-c71b.up.railway.app';
 
 // Generate mock price data
 const generateMockData = (basePrice) => {
