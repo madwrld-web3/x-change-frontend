@@ -1,14 +1,14 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { ethers, BrowserProvider, Contract } from 'ethers';
 import axios from 'axios';
+import { Hyperliquid } from 'hyperliquid';
 import {
     TrendingUp, TrendingDown, Search, CheckCircle,
-    AlertCircle, RefreshCw, Wallet, Loader2, Shield
+    AlertCircle, RefreshCw, Wallet, Loader2
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 
 const API_BASE_URL = 'https://x-backend-production-c71b.up.railway.app';
-const HYPERLIQUID_API = 'https://api.hyperliquid.xyz';
 const ARBITRUM_CHAIN_ID = '0xa4b1';
 const HYPERLIQUID_BRIDGE = "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7";
 const ARBITRUM_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
@@ -20,6 +20,7 @@ const USDC_ABI = [
 
 function App() {
     const [userWallet, setUserWallet] = useState(null);
+    const [hlSDK, setHlSDK] = useState(null);
     const [accountStatus, setAccountStatus] = useState(null);
     const [isCheckingStatus, setIsCheckingStatus] = useState(false);
     
@@ -29,10 +30,6 @@ function App() {
     const [usdSize, setUsdSize] = useState('100');
     const [leverage, setLeverage] = useState(1);
     const [isTrading, setIsTrading] = useState(false);
-    
-    const [agentAddress, setAgentAddress] = useState(null);
-    const [agentApproved, setAgentApproved] = useState(false);
-    const [isApprovingAgent, setIsApprovingAgent] = useState(false);
 
     const [depositAmount, setDepositAmount] = useState("");
     const [isDepositing, setIsDepositing] = useState(false);
@@ -98,24 +95,22 @@ function App() {
             }
 
             console.log("✓ Connected:", address);
+            
+            // Initialize Hyperliquid SDK with user's wallet
+            // The SDK will use the connected wallet to sign transactions
+            const sdk = new Hyperliquid({
+                walletAddress: address,
+                privateKey: null, // Not needed - will use wallet signing
+                testnet: false,
+                enableWs: false
+            });
+            
+            setHlSDK(sdk);
             setUserWallet({ address, signer, provider });
             checkAccountStatus(address);
-            await generateAgentAddress(address);
         } catch (error) {
             console.error('Connection error:', error);
             showNotification('Failed to connect wallet', 'error');
-        }
-    };
-
-    const generateAgentAddress = async (userAddress) => {
-        try {
-            const response = await axios.post(`${API_BASE_URL}/generate-agent`, {
-                user_address: userAddress
-            });
-            setAgentAddress(response.data.agentAddress);
-            console.log("Agent address:", response.data.agentAddress);
-        } catch (error) {
-            console.error("Failed to generate agent:", error);
         }
     };
 
@@ -179,139 +174,58 @@ function App() {
         }
     };
 
-    const activateAgent = async () => {
-        if (!userWallet || !agentAddress) {
-            showNotification("Wallet not ready", "error");
-            return;
-        }
-
-        setIsApprovingAgent(true);
-        
-        try {
-            const nonce = Date.now();
-            
-            console.log("Requesting agent approval signature...");
-            console.log("Agent address:", agentAddress);
-
-            // EIP-712 typed data for Hyperliquid agent approval
-            // CRITICAL: domain chainId must match the connected network (Arbitrum)
-            const typedData = {
-                types: {
-                    EIP712Domain: [
-                        { name: "name", type: "string" },
-                        { name: "version", type: "string" },
-                        { name: "chainId", type: "uint256" },
-                        { name: "verifyingContract", type: "address" }
-                    ],
-                    "HyperliquidTransaction:ApproveAgent": [
-                        { name: "hyperliquidChain", type: "string" },
-                        { name: "agentAddress", type: "string" },
-                        { name: "agentName", type: "string" },
-                        { name: "nonce", type: "uint64" }
-                    ]
-                },
-                primaryType: "HyperliquidTransaction:ApproveAgent",
-                domain: {
-                    name: "HyperliquidSignTransaction",
-                    version: "1",
-                    chainId: 42161, // Arbitrum chainId (user's connected network)
-                    verifyingContract: "0x0000000000000000000000000000000000000000"
-                },
-                message: {
-                    hyperliquidChain: "Mainnet",
-                    agentAddress: agentAddress.toLowerCase(),
-                    agentName: "X/CHANGE Agent",
-                    nonce: nonce
-                }
-            };
-
-            // Sign with user's signer
-            const signature = await userWallet.signer.signTypedData(
-                typedData.domain,
-                { "HyperliquidTransaction:ApproveAgent": typedData.types["HyperliquidTransaction:ApproveAgent"] },
-                typedData.message
-            );
-
-            console.log("Signature obtained, submitting to Hyperliquid...");
-
-            // Parse signature
-            const sig = ethers.Signature.from(signature);
-
-            // Submit to Hyperliquid API
-            const response = await fetch(`${HYPERLIQUID_API}/exchange`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    action: {
-                        type: "approveAgent",
-                        hyperliquidChain: "Mainnet",
-                        signatureChainId: "0xa4b1", // Arbitrum (where user is connected)
-                        agentAddress: agentAddress.toLowerCase(),
-                        agentName: "X/CHANGE Agent",
-                        nonce: nonce
-                    },
-                    nonce: nonce,
-                    signature: {
-                        r: sig.r,
-                        s: sig.s,
-                        v: sig.v
-                    }
-                })
-            });
-
-            const result = await response.json();
-            console.log("Hyperliquid response:", result);
-
-            if (result.status === "ok") {
-                setAgentApproved(true);
-                showNotification("✓ Trading Agent Activated!", "success");
-            } else {
-                throw new Error(result.response || "Agent approval failed");
-            }
-        } catch (error) {
-            console.error("Agent activation error:", error);
-            const errorMsg = error.message || error.toString();
-            showNotification(`Activation failed: ${errorMsg}`, "error");
-        } finally {
-            setIsApprovingAgent(false);
-        }
-    };
-
     const executeTrade = async (isBuy) => {
-        if (!userWallet || !selectedAsset) {
-            showNotification("Please select an asset", "error");
-            return;
-        }
-        
-        if (!agentApproved) {
-            showNotification("Please activate your trading agent first", "error");
+        if (!userWallet || !selectedAsset || !hlSDK) {
+            showNotification("Wallet not ready", "error");
             return;
         }
         
         setIsTrading(true);
         
         try {
-            const response = await axios.post(`${API_BASE_URL}/trade`, {
-                user_address: userWallet.address,
+            console.log(`Placing ${isBuy ? 'BUY' : 'SELL'} order for ${selectedAsset.symbol}`);
+            
+            // Get current price
+            const allMids = await hlSDK.info.getAllMids();
+            const currentPrice = parseFloat(allMids[selectedAsset.symbol]);
+            
+            if (!currentPrice) {
+                throw new Error("Could not fetch current price");
+            }
+            
+            // Calculate order size
+            const positionValue = parseFloat(usdSize) * leverage;
+            const orderSize = positionValue / currentPrice;
+            
+            // Calculate limit price with slippage (2%)
+            const slippageMultiplier = isBuy ? 1.02 : 0.98;
+            const limitPrice = (currentPrice * slippageMultiplier).toFixed(2);
+            
+            console.log(`Order: ${orderSize.toFixed(4)} @ $${limitPrice}`);
+            
+            // Place order using Hyperliquid SDK
+            // The SDK will prompt the user to sign with their wallet
+            const orderResult = await hlSDK.exchange.placeOrder({
                 coin: selectedAsset.symbol,
                 is_buy: isBuy,
-                usd_size: parseFloat(usdSize),
-                leverage: leverage
+                sz: orderSize.toFixed(4),
+                limit_px: limitPrice,
+                order_type: { limit: { tif: "Ioc" } }, // Immediate or Cancel
+                reduce_only: false
             });
             
-            showNotification(`✓ ${isBuy ? 'Long' : 'Short'} opened!`, "success");
-            fetchPositions(userWallet.address);
+            console.log("Order result:", orderResult);
+            
+            if (orderResult.status === "ok") {
+                showNotification(`✓ ${isBuy ? 'Long' : 'Short'} order placed!`, "success");
+                fetchPositions(userWallet.address);
+            } else {
+                throw new Error(orderResult.response || "Order failed");
+            }
+            
         } catch (error) {
             console.error("Trade error:", error);
-            const errorMsg = error.response?.data?.detail || error.message;
-            
-            if (errorMsg.toLowerCase().includes("agent") || 
-                errorMsg.toLowerCase().includes("not approved")) {
-                setAgentApproved(false);
-                showNotification("Agent needs activation", "error");
-            } else {
-                showNotification(`Trade failed: ${errorMsg}`, "error");
-            }
+            showNotification(`Trade failed: ${error.message}`, "error");
         } finally {
             setIsTrading(false);
         }
@@ -333,16 +247,22 @@ function App() {
     const closePosition = async (coin) => {
         if (!window.confirm(`Close ${coin} position?`)) return;
         
+        if (!hlSDK) {
+            showNotification("SDK not initialized", "error");
+            return;
+        }
+        
         try {
-            await axios.post(`${API_BASE_URL}/close-position`, {
-                user_address: userWallet.address,
-                coin
-            });
-            showNotification("Position closed", "success");
-            fetchPositions(userWallet.address);
+            const result = await hlSDK.exchange.closePosition(coin);
+            
+            if (result.status === "ok") {
+                showNotification("Position closed", "success");
+                fetchPositions(userWallet.address);
+            } else {
+                throw new Error(result.response || "Failed to close");
+            }
         } catch (e) {
-            const errorMsg = e.response?.data?.detail || "Failed to close position";
-            showNotification(errorMsg, "error");
+            showNotification(e.message, "error");
         }
     };
 
@@ -371,23 +291,6 @@ function App() {
                             >
                                 <Wallet size={12} /> DEPOSIT
                             </button>
-                            
-                            {!agentApproved && (
-                                <button
-                                    onClick={activateAgent}
-                                    disabled={isApprovingAgent}
-                                    className="px-4 py-2 bg-yellow-500 text-black font-bold text-xs hover:bg-yellow-400 disabled:opacity-50 flex gap-2 items-center"
-                                >
-                                    <Shield size={14} />
-                                    {isApprovingAgent ? "ACTIVATING..." : "ACTIVATE AGENT"}
-                                </button>
-                            )}
-                            
-                            {agentApproved && (
-                                <div className="px-3 py-1 bg-green-900/20 border border-green-500/50 text-green-500 text-xs font-bold flex gap-2 items-center rounded">
-                                    <CheckCircle size={12} /> AGENT ACTIVE
-                                </div>
-                            )}
                             
                             {accountValue && (
                                 <div className="text-right hidden md:block">
@@ -427,11 +330,10 @@ function App() {
             {/* Main Content */}
             <div className="flex flex-1 overflow-hidden">
                 {!userWallet ? (
-                    // Not connected
                     <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
                         <Wallet size={64} className="text-gray-700 mb-6" />
                         <h2 className="text-3xl font-black mb-4">Connect to Trade</h2>
-                        <p className="text-gray-500 mb-8">Connect your wallet to start trading perpetuals</p>
+                        <p className="text-gray-500 mb-8">Trade perpetuals directly with your wallet</p>
                         <button
                             onClick={connectWallet}
                             className="px-8 py-3 bg-white text-black font-bold text-lg hover:bg-gray-200"
@@ -440,13 +342,11 @@ function App() {
                         </button>
                     </div>
                 ) : isCheckingStatus ? (
-                    // Checking status
                     <div className="flex flex-1 flex-col items-center justify-center">
                         <Loader2 className="animate-spin text-blue-500 mb-4" size={48} />
                         <p className="text-gray-500">Checking account status...</p>
                     </div>
                 ) : showDepositModal ? (
-                    // Deposit modal
                     <div className="flex flex-1 flex-col items-center justify-center p-8 bg-black">
                         <div className="max-w-md w-full bg-gray-900/50 border border-gray-800 p-8 rounded-xl backdrop-blur-sm">
                             <div className="text-center mb-8">
@@ -488,7 +388,6 @@ function App() {
                         </div>
                     </div>
                 ) : (
-                    // Main trading interface
                     <>
                         {/* Asset List */}
                         <div className="w-64 border-r border-gray-800 flex flex-col hidden lg:flex">
@@ -526,7 +425,6 @@ function App() {
 
                         {/* Chart & Positions */}
                         <div className="flex-1 flex flex-col bg-black">
-                            {/* Chart */}
                             {selectedAsset && (
                                 <div className="h-2/3 p-6 flex flex-col border-b border-gray-800">
                                     <div className="mb-4">
@@ -650,17 +548,10 @@ function App() {
                                 />
                             </div>
 
-                            {!agentApproved && (
-                                <div className="p-4 bg-yellow-900/20 border border-yellow-500/50 rounded text-xs text-yellow-200">
-                                    <p className="font-bold mb-2">⚠️ Trading Agent Required</p>
-                                    <p>Click "Activate Agent" above to enable trading</p>
-                                </div>
-                            )}
-
                             <div className="mt-auto space-y-3">
                                 <button
                                     onClick={() => executeTrade(true)}
-                                    disabled={isTrading || !agentApproved}
+                                    disabled={isTrading}
                                     className="w-full py-4 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-black font-black flex justify-center items-center gap-2"
                                 >
                                     {isTrading ? (
@@ -672,7 +563,7 @@ function App() {
                                 </button>
                                 <button
                                     onClick={() => executeTrade(false)}
-                                    disabled={isTrading || !agentApproved}
+                                    disabled={isTrading}
                                     className="w-full py-4 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-black font-black flex justify-center items-center gap-2"
                                 >
                                     {isTrading ? (
