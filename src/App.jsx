@@ -9,8 +9,8 @@ import {
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 
 // --- CONFIGURATION ---
-// Ensure this matches your running backend URL
-const API_BASE_URL = 'http://localhost:8000';
+// CHANGED: Pointing to your LIVE Railway Backend now
+const API_BASE_URL = 'https://x-backend-production-c71b.up.railway.app'; 
 const ARBITRUM_CHAIN_ID = '0xa4b1'; // 42161
 
 function App() {
@@ -46,6 +46,7 @@ function App() {
             }
         } catch (error) {
             console.error('Fetch markets error:', error);
+            showNotification("Backend Offline", "error");
         }
     };
 
@@ -69,7 +70,7 @@ function App() {
             const accounts = await provider.send('eth_requestAccounts', []);
             const signer = await provider.getSigner();
             const address = await signer.getAddress();
-
+            
             // Check Network
             const network = await provider.getNetwork();
             if (network.chainId !== 42161n) {
@@ -106,8 +107,8 @@ function App() {
             showNotification('Generating Secure Agent...', 'info');
 
             // 1. Ask Backend to Generate Agent
-            const genRes = await axios.post(`${API_BASE_URL}/generate-agent`, {
-                user_address: userWallet.address
+            const genRes = await axios.post(`${API_BASE_URL}/generate-agent`, { 
+                user_address: userWallet.address 
             });
             const agentAddress = genRes.data.agentAddress;
 
@@ -158,7 +159,7 @@ function App() {
     // --- TRADING (VIA BACKEND) ---
     const executeTrade = async (isBuy) => {
         if (!isAgentActivated || !selectedAsset) return showNotification("Activate Agent first", "error");
-
+        
         setIsTrading(true);
         try {
             // Note: We send usd_size and leverage. Backend handles the math.
@@ -169,7 +170,7 @@ function App() {
                 usd_size: parseFloat(usdSize),
                 leverage: leverage
             });
-
+            
             showNotification(`Order Placed: ${isBuy ? 'LONG' : 'SHORT'} ${selectedAsset.symbol}`, 'success');
             setTimeout(fetchPositions, 1000);
         } catch (error) {
