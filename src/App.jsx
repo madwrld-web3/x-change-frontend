@@ -1,7 +1,7 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { ethers, BrowserProvider, Contract } from 'ethers';
 import { createWalletClient, custom } from 'viem';
-// REMOVED: import { arbitrum } from 'viem/chains'; -> We will let the wallet decide
+import { arbitrum } from 'viem/chains'; // Put this back
 import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid';
 import axios from 'axios';
 import {
@@ -82,39 +82,55 @@ function App() {
         }
     }, [selectedAsset]);
 
-    // --- HELPER: FORCE CHAIN SWITCH ---
-    const ensureArbitrumNetwork = async () => {
+    // --- HELPER: ROBUST NETWORK SWITCHER ---
+    const waitForArbitrum = async () => {
         if (!window.ethereum) return false;
-        try {
-            const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-            
-            // Check if we are already on Arbitrum
-            if (chainId === ARBITRUM_CHAIN_ID || parseInt(chainId, 16) === ARBITRUM_CHAIN_ID_DECIMAL) {
-                return true;
-            }
 
+        // 1. Helper to get current chain
+        const getChain = async () => {
+            return await window.ethereum.request({ method: 'eth_chainId' });
+        };
+
+        let chainId = await getChain();
+        
+        // 2. If already on Arbitrum, we are good
+        if (chainId === ARBITRUM_CHAIN_ID || parseInt(chainId, 16) === ARBITRUM_CHAIN_ID_DECIMAL) {
+            return true;
+        }
+
+        // 3. Request Switch
+        try {
             await window.ethereum.request({
                 method: 'wallet_switchEthereumChain',
                 params: [{ chainId: ARBITRUM_CHAIN_ID }],
             });
-            
-            // Wait a moment for the wallet to actually update its internal state
-            await new Promise(r => setTimeout(r, 1000));
-            return true;
         } catch (error) {
-            console.error("Failed to switch network:", error);
             if (error.code === 4902) {
                 alert("Please add Arbitrum One network to your wallet");
+                return false;
             }
-            return false;
+            console.error("Switch Request Failed:", error);
+            // Some wallets fail request but still switch, so we continue to poll
         }
+
+        // 4. POLL for 5 seconds to wait for the switch to actually happen
+        // This is the key fix for "InvalidParamsRpcError"
+        for (let i = 0; i < 50; i++) {
+            await new Promise(r => setTimeout(r, 100)); // Wait 100ms
+            chainId = await getChain();
+            if (chainId === ARBITRUM_CHAIN_ID || parseInt(chainId, 16) === ARBITRUM_CHAIN_ID_DECIMAL) {
+                return true;
+            }
+        }
+
+        return false;
     };
 
     // --- WALLET ---
     const connectWallet = async () => {
         if (!window.ethereum) return alert('Wallet required');
         try {
-            await ensureArbitrumNetwork(); 
+            await waitForArbitrum(); 
 
             const provider = new BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
@@ -134,7 +150,7 @@ function App() {
         } catch(e) { console.error(e); }
     };
 
-    // --- TRADING LOGIC (FIXED) ---
+    // --- TRADING LOGIC ---
     const executeTrade = async (isBuy) => {
         if (!userWallet || !selectedAsset) return;
         
@@ -146,15 +162,17 @@ function App() {
         setIsTrading(true);
 
         try {
-            // STEP 1: FORCE NETWORK
-            const isCorrectChain = await ensureArbitrumNetwork();
-            if (!isCorrectChain) throw new Error("Incorrect Network. Please switch to Arbitrum.");
+            // STEP 1: STRICT NETWORK CHECK (WITH WAIT)
+            const isOnArbitrum = await waitForArbitrum();
+            if (!isOnArbitrum) {
+                throw new Error("Wallet not on Arbitrum. Please switch manually.");
+            }
 
-            // STEP 2: SETUP SDK (LOOSE MODE)
-            // We do NOT pass 'chain: arbitrum' here. 
-            // We let Viem trust whatever chain the wallet is currently on.
+            // STEP 2: SETUP SDK
+            // We pass 'chain: arbitrum' to make Viem explicitly aware of the expected ID
             const walletClient = createWalletClient({
                 account: userWallet.address,
+                chain: arbitrum,
                 transport: custom(window.ethereum)
             });
 
@@ -204,8 +222,11 @@ function App() {
 
         } catch (error) {
             console.error(error);
-            if (error.message?.includes("User rejected")) {
+            // Handle common wallet errors nicely
+            if (error.message?.includes("User rejected") || error.code === 4001) {
                 showNotification("Signature Rejected", "error");
+            } else if (error.message?.includes("chainId")) {
+                showNotification("Chain Mismatch. Please check your wallet.", "error");
             } else {
                 showNotification(error.message || "Trade Failed", "error");
             }
@@ -220,11 +241,11 @@ function App() {
         if (assetIndex === undefined) return alert("Asset ID not found");
 
         try {
-            await ensureArbitrumNetwork();
+            await waitForArbitrum();
 
-            // FIXED: Removed strict chain requirement
             const walletClient = createWalletClient({
                 account: userWallet.address,
+                chain: arbitrum,
                 transport: custom(window.ethereum)
             });
             const client = new ExchangeClient({ wallet: walletClient, transport: new HttpTransport() });
@@ -264,7 +285,7 @@ function App() {
         if (!depositAmount || parseFloat(depositAmount) < 10) return alert("Min 10 USDC");
         setIsDepositing(true);
         try {
-            await ensureArbitrumNetwork(); 
+            await waitForArbitrum(); 
             const provider = new BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
             const usdc = new Contract(ARBITRUM_USDC, USDC_ABI, signer);
