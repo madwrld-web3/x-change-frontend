@@ -1,7 +1,7 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { ethers, BrowserProvider, Contract } from 'ethers';
 import { createWalletClient, custom } from 'viem';
-import { arbitrum } from 'viem/chains';
+// REMOVED: import { arbitrum } from 'viem/chains'; -> We will let the wallet decide
 import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid';
 import axios from 'axios';
 import {
@@ -85,22 +85,24 @@ function App() {
     // --- HELPER: FORCE CHAIN SWITCH ---
     const ensureArbitrumNetwork = async () => {
         if (!window.ethereum) return false;
-        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-        
-        // Check if we are already on Arbitrum (0xa4b1 or 42161)
-        if (chainId === ARBITRUM_CHAIN_ID || parseInt(chainId, 16) === ARBITRUM_CHAIN_ID_DECIMAL) {
-            return true;
-        }
-
         try {
+            const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+            
+            // Check if we are already on Arbitrum
+            if (chainId === ARBITRUM_CHAIN_ID || parseInt(chainId, 16) === ARBITRUM_CHAIN_ID_DECIMAL) {
+                return true;
+            }
+
             await window.ethereum.request({
                 method: 'wallet_switchEthereumChain',
                 params: [{ chainId: ARBITRUM_CHAIN_ID }],
             });
+            
+            // Wait a moment for the wallet to actually update its internal state
+            await new Promise(r => setTimeout(r, 1000));
             return true;
         } catch (error) {
             console.error("Failed to switch network:", error);
-            // Error 4902 means chain not added
             if (error.code === 4902) {
                 alert("Please add Arbitrum One network to your wallet");
             }
@@ -112,7 +114,7 @@ function App() {
     const connectWallet = async () => {
         if (!window.ethereum) return alert('Wallet required');
         try {
-            await ensureArbitrumNetwork(); // Switch immediately on connect
+            await ensureArbitrumNetwork(); 
 
             const provider = new BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
@@ -144,15 +146,15 @@ function App() {
         setIsTrading(true);
 
         try {
-            // STEP 1: FORCE NETWORK CHECK BEFORE TRADING
-            // This prevents the "chainId mismatch" error from Viem
+            // STEP 1: FORCE NETWORK
             const isCorrectChain = await ensureArbitrumNetwork();
             if (!isCorrectChain) throw new Error("Incorrect Network. Please switch to Arbitrum.");
 
-            // STEP 2: SETUP SDK
+            // STEP 2: SETUP SDK (LOOSE MODE)
+            // We do NOT pass 'chain: arbitrum' here. 
+            // We let Viem trust whatever chain the wallet is currently on.
             const walletClient = createWalletClient({
                 account: userWallet.address,
-                chain: arbitrum,
                 transport: custom(window.ethereum)
             });
 
@@ -174,7 +176,6 @@ function App() {
             console.log(`Placing Order: ${selectedAsset.symbol} (#${assetIndex}) Size: ${fmtSize}`);
 
             // STEP 4: SEND ORDER
-            // We do NOT group orders ('na') to keep it simple
             const result = await client.order({
                 orders: [{
                     a: assetIndex,
@@ -205,11 +206,8 @@ function App() {
             console.error(error);
             if (error.message?.includes("User rejected")) {
                 showNotification("Signature Rejected", "error");
-            } else if (error.message?.includes("Incorrect Network")) {
-                showNotification("Wrong Network: Switch to Arbitrum", "error");
             } else {
-                // Try to show useful error details
-                showNotification(error.shortMessage || "Trade Failed", "error");
+                showNotification(error.message || "Trade Failed", "error");
             }
         } finally {
             setIsTrading(false);
@@ -222,11 +220,11 @@ function App() {
         if (assetIndex === undefined) return alert("Asset ID not found");
 
         try {
-            await ensureArbitrumNetwork(); // Force check here too
+            await ensureArbitrumNetwork();
 
+            // FIXED: Removed strict chain requirement
             const walletClient = createWalletClient({
                 account: userWallet.address,
-                chain: arbitrum,
                 transport: custom(window.ethereum)
             });
             const client = new ExchangeClient({ wallet: walletClient, transport: new HttpTransport() });
