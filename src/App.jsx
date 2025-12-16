@@ -10,8 +10,9 @@ import {
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 
 // CONFIGURATION
-const API_BASE_URL = 'https://x-backend-production-c71b.up.railway.app'; // Your Backend
+const API_BASE_URL = 'https://x-backend-production-c71b.up.railway.app'; 
 const ARBITRUM_CHAIN_ID = '0xa4b1'; // 42161
+const ARBITRUM_CHAIN_ID_DECIMAL = 42161;
 const HYPERLIQUID_BRIDGE = "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7";
 const ARBITRUM_USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
 
@@ -26,7 +27,7 @@ function App() {
     
     // Market Data
     const [assets, setAssets] = useState([]);
-    const [assetMap, setAssetMap] = useState({}); // Maps Symbol -> ID (CRITICAL FOR TRADING)
+    const [assetMap, setAssetMap] = useState({}); 
     const [selectedAsset, setSelectedAsset] = useState(null);
     const [searchFilter, setSearchFilter] = useState('');
     
@@ -44,27 +45,24 @@ function App() {
     const [accountValue, setAccountValue] = useState(null);
     const [chartData, setChartData] = useState([]);
 
-    // 1. INITIAL LOAD: Fetch Markets AND Metadata (Asset IDs)
+    // 1. INITIAL LOAD
     useEffect(() => {
         const initData = async () => {
             try {
-                // Fetch Prices from your backend
                 const marketRes = await axios.get(`${API_BASE_URL}/markets`);
                 setAssets(marketRes.data);
                 if (marketRes.data.length > 0) setSelectedAsset(marketRes.data[0]);
 
-                // Fetch Asset IDs from Hyperliquid directly (Needed for placing orders)
-                const transport = new HttpTransport(); // Mainnet
+                const transport = new HttpTransport(); 
                 const info = new InfoClient({ transport });
                 const meta = await info.meta();
                 
-                // Create a map: { "BTC": 0, "ETH": 1, ... }
                 const map = {};
                 meta.universe.forEach((u, index) => {
                     map[u.name] = index;
                 });
                 setAssetMap(map);
-                console.log("Asset Map Loaded:", map);
+                console.log("Asset Map Loaded");
             } catch (e) {
                 console.error("Failed to load market data:", e);
             }
@@ -84,22 +82,42 @@ function App() {
         }
     }, [selectedAsset]);
 
+    // --- HELPER: FORCE CHAIN SWITCH ---
+    const ensureArbitrumNetwork = async () => {
+        if (!window.ethereum) return false;
+        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+        
+        // Check if we are already on Arbitrum (0xa4b1 or 42161)
+        if (chainId === ARBITRUM_CHAIN_ID || parseInt(chainId, 16) === ARBITRUM_CHAIN_ID_DECIMAL) {
+            return true;
+        }
+
+        try {
+            await window.ethereum.request({
+                method: 'wallet_switchEthereumChain',
+                params: [{ chainId: ARBITRUM_CHAIN_ID }],
+            });
+            return true;
+        } catch (error) {
+            console.error("Failed to switch network:", error);
+            // Error 4902 means chain not added
+            if (error.code === 4902) {
+                alert("Please add Arbitrum One network to your wallet");
+            }
+            return false;
+        }
+    };
+
     // --- WALLET ---
     const connectWallet = async () => {
         if (!window.ethereum) return alert('Wallet required');
         try {
+            await ensureArbitrumNetwork(); // Switch immediately on connect
+
             const provider = new BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
             const address = await signer.getAddress();
             
-            const network = await provider.getNetwork();
-            if (network.chainId !== 42161n) {
-                await window.ethereum.request({
-                    method: 'wallet_switchEthereumChain',
-                    params: [{ chainId: ARBITRUM_CHAIN_ID }],
-                });
-            }
-
             setUserWallet({ address, signer });
             fetchPositions(address);
         } catch (e) { console.error(e); }
@@ -118,7 +136,6 @@ function App() {
     const executeTrade = async (isBuy) => {
         if (!userWallet || !selectedAsset) return;
         
-        // 1. VALIDATE ASSET ID
         const assetIndex = assetMap[selectedAsset.symbol];
         if (assetIndex === undefined) {
             return showNotification(`Error: Could not find ID for ${selectedAsset.symbol}`, "error");
@@ -127,53 +144,56 @@ function App() {
         setIsTrading(true);
 
         try {
-            // 2. Setup SDK
+            // STEP 1: FORCE NETWORK CHECK BEFORE TRADING
+            // This prevents the "chainId mismatch" error from Viem
+            const isCorrectChain = await ensureArbitrumNetwork();
+            if (!isCorrectChain) throw new Error("Incorrect Network. Please switch to Arbitrum.");
+
+            // STEP 2: SETUP SDK
             const walletClient = createWalletClient({
                 account: userWallet.address,
                 chain: arbitrum,
                 transport: custom(window.ethereum)
             });
 
-            const transport = new HttpTransport(); // Mainnet
+            const transport = new HttpTransport(); 
             const client = new ExchangeClient({ wallet: walletClient, transport });
             const info = new InfoClient({ transport });
 
-            // 3. Get Fresh Price
+            // STEP 3: PREPARE ORDER
             const allMids = await info.allMids();
             const price = parseFloat(allMids[selectedAsset.symbol]);
             
-            // 4. Calculate Parameters
-            const slippage = 0.05; // 5% buffer for Market Order
+            const slippage = 0.05; 
             const limitPx = isBuy ? price * (1 + slippage) : price * (1 - slippage);
             const sizeInTokens = parseFloat(usdSize) / price;
 
-            // Rounding (Hyperliquid allows ~5 decimals mostly, using 4 is safe)
             const fmtSize = sizeInTokens.toFixed(4);
             const fmtPrice = limitPx.toFixed(4);
 
-            console.log(`Placing Order: Asset #${assetIndex} (${selectedAsset.symbol}) Size: ${fmtSize}`);
+            console.log(`Placing Order: ${selectedAsset.symbol} (#${assetIndex}) Size: ${fmtSize}`);
 
-            // 5. SEND ORDER
+            // STEP 4: SEND ORDER
+            // We do NOT group orders ('na') to keep it simple
             const result = await client.order({
                 orders: [{
-                    a: assetIndex, // MUST BE INTEGER ID (e.g. 4), NOT STRING "ETH"
+                    a: assetIndex,
                     b: isBuy,
                     p: fmtPrice,
                     s: fmtSize,
                     r: false,
-                    t: { limit: { tif: 'Ioc' } } // IOC = Market Order
+                    t: { limit: { tif: 'Ioc' } } 
                 }],
                 grouping: 'na'
             });
 
-            // 6. Handle Response
+            // STEP 5: HANDLE RESULT
             if (result.status === 'ok') {
                 const status = result.response.data.statuses[0];
                 if (status.filled) {
                     showNotification("Order Filled!", "success");
                     fetchPositions(userWallet.address);
                 } else {
-                    // Check if it's a specific error
                     const errorMsg = status.error || JSON.stringify(status);
                     showNotification(`Order Failed: ${errorMsg}`, "error");
                 }
@@ -184,9 +204,12 @@ function App() {
         } catch (error) {
             console.error(error);
             if (error.message?.includes("User rejected")) {
-                showNotification("User rejected signature", "error");
+                showNotification("Signature Rejected", "error");
+            } else if (error.message?.includes("Incorrect Network")) {
+                showNotification("Wrong Network: Switch to Arbitrum", "error");
             } else {
-                showNotification("Trade Failed. Check Console.", "error");
+                // Try to show useful error details
+                showNotification(error.shortMessage || "Trade Failed", "error");
             }
         } finally {
             setIsTrading(false);
@@ -195,11 +218,12 @@ function App() {
 
     const closePosition = async (coin) => {
         if (!confirm("Close Position?")) return;
-        
         const assetIndex = assetMap[coin];
         if (assetIndex === undefined) return alert("Asset ID not found");
 
         try {
+            await ensureArbitrumNetwork(); // Force check here too
+
             const walletClient = createWalletClient({
                 account: userWallet.address,
                 chain: arbitrum,
@@ -208,14 +232,11 @@ function App() {
             const client = new ExchangeClient({ wallet: walletClient, transport: new HttpTransport() });
             const info = new InfoClient({ transport: new HttpTransport() });
 
-            // Get Position Size
             const pos = positions.find(p => p.coin === coin);
             if(!pos) return;
 
-            const isBuy = pos.side === 'SHORT'; // Close Short = Buy
+            const isBuy = pos.side === 'SHORT'; 
             const size = Math.abs(parseFloat(pos.size));
-            
-            // Get Price
             const allMids = await info.allMids();
             const price = parseFloat(allMids[coin]);
             const limitPx = isBuy ? price * 1.05 : price * 0.95;
@@ -226,7 +247,7 @@ function App() {
                     b: isBuy,
                     p: limitPx.toFixed(4),
                     s: size.toFixed(4),
-                    r: true, // Reduce Only
+                    r: true,
                     t: { limit: { tif: 'Ioc' } }
                 }],
                 grouping: 'na'
@@ -240,16 +261,12 @@ function App() {
         }
     };
 
-    const showNotification = (msg, type) => {
-        setNotification({ message: msg, type });
-        setTimeout(() => setNotification(null), 5000);
-    };
-
     // --- DEPOSIT ---
     const handleDeposit = async () => {
         if (!depositAmount || parseFloat(depositAmount) < 10) return alert("Min 10 USDC");
         setIsDepositing(true);
         try {
+            await ensureArbitrumNetwork(); 
             const provider = new BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
             const usdc = new Contract(ARBITRUM_USDC, USDC_ABI, signer);
@@ -263,6 +280,11 @@ function App() {
             setIsDepositing(false);
             alert("Deposit Failed");
         }
+    };
+
+    const showNotification = (msg, type) => {
+        setNotification({ message: msg, type });
+        setTimeout(() => setNotification(null), 5000);
     };
 
     const filteredAssets = assets.filter(a => a.symbol.toLowerCase().includes(searchFilter.toLowerCase()));
