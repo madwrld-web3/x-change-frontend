@@ -181,11 +181,12 @@ function App() {
             console.log("Agent address:", agentAddress);
             console.log("Nonce:", nonce);
 
-            // CRITICAL FIX: The domain must use the Hyperliquid chain ID, not Arbitrum
+            // Use Arbitrum's chainId since that's what MetaMask is connected to
+            // The signatureChainId in the action tells Hyperliquid we're signing from Arbitrum
             const domain = {
                 name: "HyperliquidSignTransaction",
                 version: "1",
-                chainId: 421614,  // Hyperliquid's chain ID (0x66eee in hex)
+                chainId: 42161,  // Arbitrum (must match MetaMask's connected network)
                 verifyingContract: "0x0000000000000000000000000000000000000000"
             };
 
