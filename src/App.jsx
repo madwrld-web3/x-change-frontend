@@ -2,7 +2,8 @@
 import { ethers, BrowserProvider, Contract } from 'ethers';
 import { createWalletClient, custom } from 'viem';
 import { arbitrum } from 'viem/chains';
-import { Hyperliquid } from '@nktkas/hyperliquid';
+// FIX: Import the correct named exports from the SDK
+import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'; 
 import axios from 'axios';
 import {
     TrendingUp, TrendingDown, Search, RefreshCw, Wallet, Loader2
@@ -10,7 +11,7 @@ import {
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 
 // CONFIGURATION
-const API_BASE_URL = 'https://x-backend-production-c71b.up.railway.app'; // Your Backend URL
+const API_BASE_URL = 'https://x-backend-production-c71b.up.railway.app';
 const ARBITRUM_CHAIN_ID = '0xa4b1'; // 42161
 const HYPERLIQUID_BRIDGE_ADDRESS = "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7";
 const ARBITRUM_USDC_ADDRESS = "0xaf88d065e77c8cc2239327c5edb3a432268e5831";
@@ -94,13 +95,12 @@ function App() {
             const response = await axios.post(`${API_BASE_URL}/api/account-status`, { wallet_address: address });
             setAccountStatus(response.data);
             
-            // If account exists, start polling for positions
             if (response.data.exists) {
-                fetchPositions(address); // Immediate fetch
+                fetchPositions(address);
                 const interval = setInterval(() => fetchPositions(address), 5000);
                 return () => clearInterval(interval);
             } else {
-                setShowDepositModal(true); // Prompt deposit if new user
+                setShowDepositModal(true);
             }
         } catch (error) {
             console.error(error);
@@ -117,7 +117,6 @@ function App() {
             const signer = await provider.getSigner();
             const address = await signer.getAddress();
 
-            // Switch Chain to Arbitrum
             const network = await provider.getNetwork();
             if (network.chainId !== 42161n) {
                 try {
@@ -144,43 +143,49 @@ function App() {
         setIsTrading(true);
 
         try {
-            // 1. Setup SDK with Viem (Standard for Hyperliquid)
+            // 1. Setup SDK with Viem
             const walletClient = createWalletClient({
                 account: userWallet.address,
                 chain: arbitrum,
                 transport: custom(window.ethereum)
             });
             
-            const sdk = new Hyperliquid(walletClient, { testnet: false, enableBatching: false });
-            await sdk.connect(); // Ensure internal state is ready
+            // FIX: Use ExchangeClient and InfoClient directly
+            const transport = new HttpTransport(); // Defaults to Mainnet
+            const client = new ExchangeClient({
+                wallet: walletClient,
+                transport: transport
+            });
+            const info = new InfoClient({ transport: transport });
 
             // 2. Get Fresh Price
-            const allMids = await sdk.info.getAllMids();
+            const allMids = await info.allMids();
             const price = parseFloat(allMids[selectedAsset.symbol]);
             if (!price) throw new Error("Could not fetch latest price");
 
             // 3. Calculate Size & Limit
-            const slippage = 0.05; // 5% Market Order buffer
+            const slippage = 0.05; 
             const limitPx = isBuy ? price * (1 + slippage) : price * (1 - slippage);
             
-            // Convert USD to Tokens
             const sizeInUsd = parseFloat(usdSize);
             const sizeInTokens = sizeInUsd / price;
             
-            // Round to 4 decimals for safety
             const formattedSize = Number(sizeInTokens.toFixed(4));
-            const formattedPrice = Number(limitPx.toFixed(4)); // Limit price must also be number
+            const formattedPrice = Number(limitPx.toFixed(4)); 
 
             console.log(`Trading: ${isBuy?'Buy':'Sell'} ${formattedSize} ${selectedAsset.symbol} @ ${formattedPrice}`);
 
             // 4. Send Order
-            const result = await sdk.exchange.placeOrder({
-                coin: selectedAsset.symbol,
-                is_buy: isBuy,
-                sz: formattedSize,
-                limit_px: formattedPrice,
-                order_type: { limit: { tif: 'Ioc' } }, // Immediate or Cancel (Market)
-                reduce_only: false
+            const result = await client.order({
+                orders: [{
+                    a: assets.findIndex(a => a.symbol === selectedAsset.symbol), // Asset Index
+                    b: isBuy,
+                    p: formattedPrice.toString(),
+                    s: formattedSize.toString(),
+                    r: false,
+                    t: { limit: { tif: 'Ioc' } }
+                }],
+                grouping: 'na'
             });
 
             // 5. Check Result
@@ -198,7 +203,7 @@ function App() {
 
         } catch (error) {
             console.error("Trade Error:", error);
-            if (error.message.includes("User rejected")) {
+            if (error.message && error.message.includes("User rejected")) {
                 showNotification("Transaction Rejected", "error");
             } else {
                 showNotification("Trade Failed", "error");
@@ -212,36 +217,45 @@ function App() {
         if (!window.confirm(`Close ${coin} position?`)) return;
         
         try {
-            // Setup SDK
             const walletClient = createWalletClient({
                 account: userWallet.address,
                 chain: arbitrum,
                 transport: custom(window.ethereum)
             });
-            const sdk = new Hyperliquid(walletClient, { testnet: false, enableBatching: false });
-            await sdk.connect();
+            
+            // FIX: Use ExchangeClient and InfoClient directly
+            const transport = new HttpTransport();
+            const client = new ExchangeClient({ wallet: walletClient, transport });
+            const info = new InfoClient({ transport });
 
-            // Find Position to get size
+            // Find Position
             const pos = positions.find(p => p.coin === coin);
             if (!pos) throw new Error("Position not found in local state");
 
-            // Close = Open opposite order with reduce_only: true
-            const isBuy = pos.side === 'SHORT'; // If short, we buy to close
+            const isBuy = pos.side === 'SHORT'; 
             const size = Math.abs(parseFloat(pos.size));
             
-            // Get Price for aggressive fill
-            const allMids = await sdk.info.getAllMids();
+            // Get Price
+            const allMids = await info.allMids();
             const price = parseFloat(allMids[coin]);
             const slippage = 0.05;
             const limitPx = isBuy ? price * (1 + slippage) : price * (1 - slippage);
+            
+            // Find asset index for the SDK
+            // We need the asset index (integer) for the order, not just the string symbol
+            const meta = await info.meta();
+            const assetIndex = meta.universe.findIndex(u => u.name === coin);
 
-            const result = await sdk.exchange.placeOrder({
-                coin: coin,
-                is_buy: isBuy,
-                sz: size,
-                limit_px: Number(limitPx.toFixed(4)),
-                order_type: { limit: { tif: 'Ioc' } },
-                reduce_only: true // IMPORTANT: Ensures we don't flip position
+            const result = await client.order({
+                orders: [{
+                    a: assetIndex,
+                    b: isBuy,
+                    p: limitPx.toFixed(4),
+                    s: size.toFixed(4),
+                    r: true, // Reduce Only
+                    t: { limit: { tif: 'Ioc' } }
+                }],
+                grouping: 'na'
             });
 
             if (result.status === 'ok') {
@@ -273,7 +287,6 @@ function App() {
             await tx.wait();
             setDepositMessage("Confirmed! Waiting for credit...");
             
-            // Poll for account existence
             let attempts = 0;
             const interval = setInterval(async () => {
                 attempts++;
