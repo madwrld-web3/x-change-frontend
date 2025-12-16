@@ -4,7 +4,7 @@ import { ethers, BrowserProvider, Contract } from 'ethers';
 import axios from 'axios';
 import {
     TrendingUp, TrendingDown, Search, CheckCircle,
-    AlertCircle, RefreshCw, Wallet, ArrowRight
+    AlertCircle, RefreshCw, Wallet, ArrowRight, Loader2
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 
@@ -22,7 +22,8 @@ const USDC_ABI = [
 function App() {
     // --- STATE ---
     const [userWallet, setUserWallet] = useState(null);
-    const [accountStatus, setAccountStatus] = useState(null); // { exists: bool, account_value: number }
+    const [accountStatus, setAccountStatus] = useState(null);
+    const [isCheckingStatus, setIsCheckingStatus] = useState(false); // <--- NEW LOADING STATE
     const [isAgentActivated, setIsAgentActivated] = useState(false);
 
     // Trading State
@@ -37,6 +38,7 @@ function App() {
     const [depositAmount, setDepositAmount] = useState("");
     const [isDepositing, setIsDepositing] = useState(false);
     const [depositMessage, setDepositMessage] = useState("");
+    const [showDepositModal, setShowDepositModal] = useState(false); // <--- MANUAL OVERRIDE
 
     // UI/Data State
     const [notification, setNotification] = useState(null);
@@ -109,6 +111,7 @@ function App() {
     };
 
     const checkAccountStatus = async (address) => {
+        setIsCheckingStatus(true); // Start Loading
         try {
             const response = await axios.post(`${API_BASE_URL}/api/account-status`, {
                 wallet_address: address
@@ -119,13 +122,19 @@ function App() {
                 // If they exist, start polling positions
                 const interval = setInterval(() => fetchPositions(address), 5000);
                 return () => clearInterval(interval);
+            } else {
+                // Force show deposit modal if user doesn't exist
+                setShowDepositModal(true);
             }
         } catch (error) {
             console.error("Status check failed", error);
+            showNotification("Failed to check account status", "error");
+        } finally {
+            setIsCheckingStatus(false); // Stop Loading
         }
     };
 
-    // --- DEPOSIT / BRIDGE LOGIC (THE FIX) ---
+    // --- DEPOSIT / BRIDGE LOGIC ---
     const handleDeposit = async () => {
         if (!depositAmount || parseFloat(depositAmount) < 10) {
             setDepositMessage("Minimum deposit is 10 USDC.");
@@ -165,6 +174,7 @@ function App() {
                     clearInterval(interval);
                     setAccountStatus(res.data);
                     setIsDepositing(false);
+                    setShowDepositModal(false); // Close modal
                     showNotification("Account Initialized!", "success");
                 }
 
@@ -297,6 +307,58 @@ function App() {
         a.symbol.toLowerCase().includes(searchFilter.toLowerCase())
     );
 
+    // --- RENDER DEPOSIT COMPONENT (Reusable) ---
+    const DepositComponent = () => (
+        <div className="max-w-md w-full bg-gray-900/50 border border-gray-800 p-8 rounded-xl backdrop-blur-sm mx-auto">
+            <div className="text-center mb-8">
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-blue-600/20 text-blue-500 mb-4">
+                    <Wallet size={24} />
+                </div>
+                <h2 className="text-2xl font-bold mb-2">Deposit Funds</h2>
+                <p className="text-gray-400 text-sm">
+                    {accountStatus?.exists ? "Add more collateral to your account." : "Initialize your account to start trading."}
+                </p>
+            </div>
+
+            <div className="space-y-4">
+                <div>
+                    <label className="text-xs font-bold text-gray-500 mb-1 block">AMOUNT (USDC - ARBITRUM)</label>
+                    <div className="relative">
+                        <input
+                            type="number"
+                            placeholder="Min 10.0"
+                            value={depositAmount}
+                            onChange={(e) => setDepositAmount(e.target.value)}
+                            className="w-full bg-black border border-gray-700 p-4 rounded text-white font-mono focus:border-blue-500 focus:outline-none"
+                        />
+                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-bold">USDC</span>
+                    </div>
+                </div>
+
+                <button
+                    onClick={handleDeposit}
+                    disabled={isDepositing}
+                    className="w-full py-4 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900 disabled:opacity-50 text-white font-bold rounded flex justify-center items-center gap-2"
+                >
+                    {isDepositing ? <RefreshCw className="animate-spin" /> : <ArrowRight />}
+                    {isDepositing ? "Processing..." : "Deposit Funds"}
+                </button>
+
+                {depositMessage && (
+                    <div className="p-3 bg-blue-900/20 text-blue-400 text-xs text-center border border-blue-900/50 rounded">
+                        {depositMessage}
+                    </div>
+                )}
+
+                {showDepositModal && accountStatus?.exists && (
+                    <button onClick={() => setShowDepositModal(false)} className="w-full text-xs text-gray-500 hover:text-white mt-2">
+                        Cancel / Back to Trading
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+
     return (
         <div className="min-h-screen bg-black text-white font-mono flex flex-col">
             {/* HEADER */}
@@ -308,6 +370,11 @@ function App() {
                 <div className="flex gap-4 items-center">
                     {userWallet ? (
                         <div className="flex gap-3 items-center">
+                            {/* MANUAL DEPOSIT BUTTON */}
+                            <button onClick={() => setShowDepositModal(true)} className="px-3 py-2 bg-gray-900 border border-gray-800 hover:border-blue-500 text-xs font-bold flex gap-2 items-center">
+                                <Wallet size={12} /> DEPOSIT
+                            </button>
+
                             {accountStatus?.exists && !isAgentActivated && (
                                 <button onClick={activateAgent} className="px-4 py-2 bg-yellow-500 text-black font-bold text-xs hover:bg-yellow-400">
                                     ACTIVATE AGENT
@@ -344,7 +411,7 @@ function App() {
             {/* MAIN CONTENT AREA */}
             <div className="flex flex-1 overflow-hidden">
 
-                {/* STATE 1: WALLET NOT CONNECTED */}
+                {/* SCENARIO 1: NOT CONNECTED */}
                 {!userWallet ? (
                     <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
                         <Wallet size={64} className="text-gray-700 mb-6" />
@@ -356,199 +423,163 @@ function App() {
                     </div>
                 ) :
 
-                    // STATE 2: CONNECTED BUT NO ACCOUNT ON HYPERLIQUID (SHOW DEPOSIT)
-                    (accountStatus && !accountStatus.exists) ? (
-                        <div className="flex flex-1 flex-col items-center justify-center p-8 bg-black">
-                            <div className="max-w-md w-full bg-gray-900/50 border border-gray-800 p-8 rounded-xl backdrop-blur-sm">
-                                <div className="text-center mb-8">
-                                    <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-blue-600/20 text-blue-500 mb-4">
-                                        <Wallet size={24} />
+                    // SCENARIO 2: CHECKING STATUS (LOADING)
+                    isCheckingStatus ? (
+                        <div className="flex flex-1 flex-col items-center justify-center">
+                            <Loader2 className="animate-spin text-blue-500 mb-4" size={48} />
+                            <p className="text-gray-500">Verifying Account Status...</p>
+                        </div>
+                    ) :
+
+                        // SCENARIO 3: DEPOSIT MODAL (User doesn't exist OR clicked Deposit button)
+                        (showDepositModal) ? (
+                            <div className="flex flex-1 flex-col items-center justify-center p-8 bg-black">
+                                <DepositComponent />
+                            </div>
+                        ) : (
+
+                            // SCENARIO 4: TRADING DASHBOARD (Default)
+                            <>
+                                {/* ASSET LIST */}
+                                <div className="w-64 border-r border-gray-800 flex flex-col hidden lg:flex">
+                                    <div className="p-3 border-b border-gray-800 relative">
+                                        <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-gray-600" size={14} />
+                                        <input
+                                            className="w-full bg-gray-900 border border-gray-700 py-1 pl-8 pr-2 text-xs text-white focus:outline-none focus:border-white transition-colors"
+                                            placeholder="Search..."
+                                            value={searchFilter}
+                                            onChange={e => setSearchFilter(e.target.value)}
+                                        />
                                     </div>
-                                    <h2 className="text-2xl font-bold mb-2">Initialize Account</h2>
-                                    <p className="text-gray-400 text-sm">
-                                        You are new to the exchange. To activate trading and API agents, you must deposit funds.
-                                    </p>
+                                    <div className="flex-1 overflow-y-auto">
+                                        {filteredAssets.map(asset => (
+                                            <button
+                                                key={asset.symbol}
+                                                onClick={() => setSelectedAsset(asset)}
+                                                className={`w-full px-4 py-3 flex justify-between items-center border-b border-gray-900 hover:bg-gray-900/50 transition-colors
+                  ${selectedAsset?.symbol === asset.symbol ? 'bg-gray-900 border-l-2 border-l-white' : ''}`}
+                                            >
+                                                <div className="text-left">
+                                                    <div className="font-bold text-sm">{asset.symbol}</div>
+                                                    <div className="text-[10px] text-gray-500">PERP</div>
+                                                </div>
+                                                <div className="font-mono text-sm">${asset.price.toFixed(asset.price < 1 ? 4 : 2)}</div>
+                                            </button>
+                                        ))}
+                                    </div>
                                 </div>
 
-                                <div className="space-y-4">
-                                    <div>
-                                        <label className="text-xs font-bold text-gray-500 mb-1 block">AMOUNT (USDC - ARBITRUM)</label>
-                                        <div className="relative">
-                                            <input
-                                                type="number"
-                                                placeholder="Min 10.0"
-                                                value={depositAmount}
-                                                onChange={(e) => setDepositAmount(e.target.value)}
-                                                className="w-full bg-black border border-gray-700 p-4 rounded text-white font-mono focus:border-blue-500 focus:outline-none"
-                                            />
-                                            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-bold">USDC</span>
-                                        </div>
-                                    </div>
-
-                                    <button
-                                        onClick={handleDeposit}
-                                        disabled={isDepositing}
-                                        className="w-full py-4 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900 disabled:opacity-50 text-white font-bold rounded flex justify-center items-center gap-2"
-                                    >
-                                        {isDepositing ? <RefreshCw className="animate-spin" /> : <ArrowRight />}
-                                        {isDepositing ? "Processing..." : "Deposit & Initialize"}
-                                    </button>
-
-                                    {depositMessage && (
-                                        <div className="p-3 bg-blue-900/20 text-blue-400 text-xs text-center border border-blue-900/50 rounded">
-                                            {depositMessage}
+                                {/* CHART & POSITIONS */}
+                                <div className="flex-1 flex flex-col bg-black">
+                                    {selectedAsset && (
+                                        <div className="h-2/3 p-6 flex flex-col border-b border-gray-800">
+                                            <div className="mb-4">
+                                                <h2 className="text-3xl font-black">{selectedAsset.symbol}USD</h2>
+                                                <div className="text-xl font-mono text-gray-400">${selectedAsset.price}</div>
+                                            </div>
+                                            <div className="flex-1 w-full">
+                                                <ResponsiveContainer width="100%" height="100%">
+                                                    <LineChart data={chartData}>
+                                                        <XAxis dataKey="time" hide />
+                                                        <YAxis domain={['auto', 'auto']} orientation="right" tick={{ fill: '#333', fontSize: 10 }} stroke="#333" />
+                                                        <Line type="stepAfter" dataKey="price" stroke="#fff" strokeWidth={1} dot={false} />
+                                                    </LineChart>
+                                                </ResponsiveContainer>
+                                            </div>
                                         </div>
                                     )}
 
-                                    <p className="text-[10px] text-gray-600 text-center pt-2">
-                                        Funds are bridged directly from Arbitrum One to the Hyperliquid Smart Contract.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    ) : (
-                        // STATE 3: ACCOUNT EXISTS -> TRADING DASHBOARD (EXISTING UI)
-                        <>
-                            {/* ASSET LIST */}
-                            <div className="w-64 border-r border-gray-800 flex flex-col hidden lg:flex">
-                                <div className="p-3 border-b border-gray-800 relative">
-                                    <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-gray-600" size={14} />
-                                    <input
-                                        className="w-full bg-gray-900 border border-gray-700 py-1 pl-8 pr-2 text-xs text-white focus:outline-none focus:border-white transition-colors"
-                                        placeholder="Search..."
-                                        value={searchFilter}
-                                        onChange={e => setSearchFilter(e.target.value)}
-                                    />
-                                </div>
-                                <div className="flex-1 overflow-y-auto">
-                                    {filteredAssets.map(asset => (
-                                        <button
-                                            key={asset.symbol}
-                                            onClick={() => setSelectedAsset(asset)}
-                                            className={`w-full px-4 py-3 flex justify-between items-center border-b border-gray-900 hover:bg-gray-900/50 transition-colors
-                  ${selectedAsset?.symbol === asset.symbol ? 'bg-gray-900 border-l-2 border-l-white' : ''}`}
-                                        >
-                                            <div className="text-left">
-                                                <div className="font-bold text-sm">{asset.symbol}</div>
-                                                <div className="text-[10px] text-gray-500">PERP</div>
-                                            </div>
-                                            <div className="font-mono text-sm">${asset.price.toFixed(asset.price < 1 ? 4 : 2)}</div>
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* CHART & POSITIONS */}
-                            <div className="flex-1 flex flex-col bg-black">
-                                {selectedAsset && (
-                                    <div className="h-2/3 p-6 flex flex-col border-b border-gray-800">
-                                        <div className="mb-4">
-                                            <h2 className="text-3xl font-black">{selectedAsset.symbol}USD</h2>
-                                            <div className="text-xl font-mono text-gray-400">${selectedAsset.price}</div>
+                                    {/* POSITIONS TABLE */}
+                                    <div className="flex-1 bg-black p-4 overflow-auto">
+                                        <div className="flex justify-between items-center mb-4">
+                                            <h3 className="text-sm font-bold text-gray-500">OPEN POSITIONS</h3>
+                                            <RefreshCw size={14} className={`text-gray-600 ${isLoadingPositions ? 'animate-spin' : ''}`} />
                                         </div>
-                                        <div className="flex-1 w-full">
-                                            <ResponsiveContainer width="100%" height="100%">
-                                                <LineChart data={chartData}>
-                                                    <XAxis dataKey="time" hide />
-                                                    <YAxis domain={['auto', 'auto']} orientation="right" tick={{ fill: '#333', fontSize: 10 }} stroke="#333" />
-                                                    <Line type="stepAfter" dataKey="price" stroke="#fff" strokeWidth={1} dot={false} />
-                                                </LineChart>
-                                            </ResponsiveContainer>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {/* POSITIONS TABLE */}
-                                <div className="flex-1 bg-black p-4 overflow-auto">
-                                    <div className="flex justify-between items-center mb-4">
-                                        <h3 className="text-sm font-bold text-gray-500">OPEN POSITIONS</h3>
-                                        <RefreshCw size={14} className={`text-gray-600 ${isLoadingPositions ? 'animate-spin' : ''}`} />
-                                    </div>
-                                    <table className="w-full text-xs">
-                                        <thead>
-                                            <tr className="text-gray-600 border-b border-gray-800">
-                                                <th className="text-left py-2">ASSET</th>
-                                                <th className="text-right py-2">SIZE</th>
-                                                <th className="text-right py-2">ENTRY</th>
-                                                <th className="text-right py-2">PNL</th>
-                                                <th className="text-right py-2">ACTION</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {positions.map((pos, i) => (
-                                                <tr key={i} className="border-b border-gray-900">
-                                                    <td className="py-3 font-bold">{pos.coin}</td>
-                                                    <td className={`py-3 text-right ${pos.side === 'LONG' ? 'text-green-500' : 'text-red-500'}`}>
-                                                        {pos.size}
-                                                    </td>
-                                                    <td className="py-3 text-right">${pos.entry_price.toFixed(2)}</td>
-                                                    <td className={`py-3 text-right ${pos.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                                        ${pos.unrealized_pnl.toFixed(2)}
-                                                    </td>
-                                                    <td className="py-3 text-right">
-                                                        <button onClick={() => closePosition(pos.coin)} className="text-[10px] underline hover:text-white">
-                                                            CLOSE
-                                                        </button>
-                                                    </td>
+                                        <table className="w-full text-xs">
+                                            <thead>
+                                                <tr className="text-gray-600 border-b border-gray-800">
+                                                    <th className="text-left py-2">ASSET</th>
+                                                    <th className="text-right py-2">SIZE</th>
+                                                    <th className="text-right py-2">ENTRY</th>
+                                                    <th className="text-right py-2">PNL</th>
+                                                    <th className="text-right py-2">ACTION</th>
                                                 </tr>
-                                            ))}
-                                            {positions.length === 0 && (
-                                                <tr><td colSpan="5" className="py-8 text-center text-gray-600">No open positions</td></tr>
-                                            )}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-
-                            {/* ORDER FORM */}
-                            <div className="w-80 border-l border-gray-800 p-6 flex flex-col gap-6 bg-black">
-                                <div>
-                                    <label className="text-[10px] font-bold text-gray-500 block mb-2">SIZE (USD)</label>
-                                    <input
-                                        type="number"
-                                        value={usdSize}
-                                        onChange={e => setUsdSize(e.target.value)}
-                                        className="w-full bg-gray-900 border border-gray-700 p-3 text-lg font-bold text-white focus:border-white focus:outline-none"
-                                    />
-                                </div>
-
-                                <div>
-                                    <div className="flex justify-between mb-2">
-                                        <label className="text-[10px] font-bold text-gray-500">LEVERAGE</label>
-                                        <span className="text-xs font-bold">{leverage}x</span>
+                                            </thead>
+                                            <tbody>
+                                                {positions.map((pos, i) => (
+                                                    <tr key={i} className="border-b border-gray-900">
+                                                        <td className="py-3 font-bold">{pos.coin}</td>
+                                                        <td className={`py-3 text-right ${pos.side === 'LONG' ? 'text-green-500' : 'text-red-500'}`}>
+                                                            {pos.size}
+                                                        </td>
+                                                        <td className="py-3 text-right">${pos.entry_price.toFixed(2)}</td>
+                                                        <td className={`py-3 text-right ${pos.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                                            ${pos.unrealized_pnl.toFixed(2)}
+                                                        </td>
+                                                        <td className="py-3 text-right">
+                                                            <button onClick={() => closePosition(pos.coin)} className="text-[10px] underline hover:text-white">
+                                                                CLOSE
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                                {positions.length === 0 && (
+                                                    <tr><td colSpan="5" className="py-8 text-center text-gray-600">No open positions</td></tr>
+                                                )}
+                                            </tbody>
+                                        </table>
                                     </div>
-                                    <input
-                                        type="range" min="1" max="50" value={leverage}
-                                        onChange={e => setLeverage(Number(e.target.value))}
-                                        className="w-full accent-white"
-                                    />
                                 </div>
 
-                                <div className="mt-auto space-y-3">
-                                    <button
-                                        onClick={() => executeTrade(true)}
-                                        disabled={isTrading || !isAgentActivated}
-                                        className="w-full py-4 bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-black font-black flex justify-center gap-2"
-                                    >
-                                        {isTrading ? <RefreshCw className="animate-spin" /> : <TrendingUp />} BUY / LONG
-                                    </button>
-                                    <button
-                                        onClick={() => executeTrade(false)}
-                                        disabled={isTrading || !isAgentActivated}
-                                        className="w-full py-4 bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-black font-black flex justify-center gap-2"
-                                    >
-                                        {isTrading ? <RefreshCw className="animate-spin" /> : <TrendingDown />} SELL / SHORT
-                                    </button>
-                                </div>
-
-                                {!isAgentActivated && userWallet && (
-                                    <div className="p-3 border border-yellow-900/50 bg-yellow-900/10 text-yellow-500 text-xs text-center">
-                                        ⚠️ Agent activation required to trade
+                                {/* ORDER FORM */}
+                                <div className="w-80 border-l border-gray-800 p-6 flex flex-col gap-6 bg-black">
+                                    <div>
+                                        <label className="text-[10px] font-bold text-gray-500 block mb-2">SIZE (USD)</label>
+                                        <input
+                                            type="number"
+                                            value={usdSize}
+                                            onChange={e => setUsdSize(e.target.value)}
+                                            className="w-full bg-gray-900 border border-gray-700 p-3 text-lg font-bold text-white focus:border-white focus:outline-none"
+                                        />
                                     </div>
-                                )}
-                            </div>
-                        </>
-                    )}
+
+                                    <div>
+                                        <div className="flex justify-between mb-2">
+                                            <label className="text-[10px] font-bold text-gray-500">LEVERAGE</label>
+                                            <span className="text-xs font-bold">{leverage}x</span>
+                                        </div>
+                                        <input
+                                            type="range" min="1" max="50" value={leverage}
+                                            onChange={e => setLeverage(Number(e.target.value))}
+                                            className="w-full accent-white"
+                                        />
+                                    </div>
+
+                                    <div className="mt-auto space-y-3">
+                                        <button
+                                            onClick={() => executeTrade(true)}
+                                            disabled={isTrading || !isAgentActivated}
+                                            className="w-full py-4 bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-black font-black flex justify-center gap-2"
+                                        >
+                                            {isTrading ? <RefreshCw className="animate-spin" /> : <TrendingUp />} BUY / LONG
+                                        </button>
+                                        <button
+                                            onClick={() => executeTrade(false)}
+                                            disabled={isTrading || !isAgentActivated}
+                                            className="w-full py-4 bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-black font-black flex justify-center gap-2"
+                                        >
+                                            {isTrading ? <RefreshCw className="animate-spin" /> : <TrendingDown />} SELL / SHORT
+                                        </button>
+                                    </div>
+
+                                    {!isAgentActivated && userWallet && (
+                                        <div className="p-3 border border-yellow-900/50 bg-yellow-900/10 text-yellow-500 text-xs text-center">
+                                            ⚠️ Agent activation required to trade
+                                        </div>
+                                    )}
+                                </div>
+                            </>
+                        )}
             </div>
         </div>
     );
