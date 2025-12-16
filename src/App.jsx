@@ -1,19 +1,20 @@
+// App.jsx
 import React, { useState, useEffect } from 'react';
-import { ethers } from 'ethers';
+import { ethers, BrowserProvider } from 'ethers';
 import axios from 'axios';
 import {
-    Wallet, TrendingUp, TrendingDown, Search, CheckCircle,
-    AlertCircle, X as XIcon, RefreshCw
+    TrendingUp, TrendingDown, Search, CheckCircle,
+    AlertCircle, RefreshCw
 } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 
 // --- CONFIGURATION ---
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://x-backend-production-c71b.up.railway.app';
-const HYPERLIQUID_MAINNET_ID = 42161; // Arbitrum One Chain ID used for signing
+// Ensure this matches your running backend URL
+const API_BASE_URL = 'http://localhost:8000';
+const ARBITRUM_CHAIN_ID = '0xa4b1'; // 42161
 
 function App() {
     const [userWallet, setUserWallet] = useState(null);
-    const [agentWallet, setAgentWallet] = useState(null);
     const [isAgentActivated, setIsAgentActivated] = useState(false);
 
     const [assets, setAssets] = useState([]);
@@ -32,32 +33,8 @@ function App() {
 
     // --- INITIALIZATION ---
     useEffect(() => {
-        // 1. Generate or Load Agent Wallet (Ephemeral key for this browser)
-        const storedKey = localStorage.getItem('local_agent_key');
-        const storedActivation = localStorage.getItem('agent_activated');
-
-        if (storedKey) {
-            try {
-                const wallet = new ethers.Wallet(storedKey);
-                setAgentWallet(wallet);
-                if (storedActivation === 'true') setIsAgentActivated(true);
-            } catch (e) {
-                generateNewAgentWallet();
-            }
-        } else {
-            generateNewAgentWallet();
-        }
-
         fetchMarkets();
     }, []);
-
-    const generateNewAgentWallet = () => {
-        const wallet = ethers.Wallet.createRandom();
-        localStorage.setItem('local_agent_key', wallet.privateKey);
-        setAgentWallet(wallet);
-        setIsAgentActivated(false); // New wallet needs new approval
-        localStorage.removeItem('agent_activated');
-    };
 
     // --- MARKET DATA ---
     const fetchMarkets = async () => {
@@ -74,7 +51,7 @@ function App() {
 
     useEffect(() => {
         if (selectedAsset) {
-            // Simple mock chart data based on real price
+            // Mock chart data generation based on current price
             const base = selectedAsset.price;
             const data = Array.from({ length: 20 }, (_, i) => ({
                 time: i,
@@ -88,10 +65,25 @@ function App() {
     const connectWallet = async () => {
         if (!window.ethereum) return showNotification('MetaMask required', 'error');
         try {
-            const provider = new ethers.BrowserProvider(window.ethereum);
+            const provider = new BrowserProvider(window.ethereum);
             const accounts = await provider.send('eth_requestAccounts', []);
             const signer = await provider.getSigner();
-            setUserWallet({ address: accounts[0], signer, provider });
+            const address = await signer.getAddress();
+
+            // Check Network
+            const network = await provider.getNetwork();
+            if (network.chainId !== 42161n) {
+                try {
+                    await window.ethereum.request({
+                        method: 'wallet_switchEthereumChain',
+                        params: [{ chainId: ARBITRUM_CHAIN_ID }],
+                    });
+                } catch (e) {
+                    return showNotification("Please switch to Arbitrum One", "error");
+                }
+            }
+
+            setUserWallet({ address, signer, provider });
             showNotification('Wallet Connected', 'success');
         } catch (error) {
             showNotification('Connection failed', 'error');
@@ -99,108 +91,101 @@ function App() {
     };
 
     useEffect(() => {
-        if (userWallet && isAgentActivated) {
+        if (userWallet) {
             fetchPositions();
             const interval = setInterval(fetchPositions, 5000);
             return () => clearInterval(interval);
         }
-    }, [userWallet, isAgentActivated]);
+    }, [userWallet]);
 
-    // --- CORE: AGENT ACTIVATION (THE FIX) ---
+    // --- CORE: AGENT ACTIVATION (NEW SECURE FLOW) ---
     const activateAgent = async () => {
-        if (!userWallet || !agentWallet) return;
+        if (!userWallet) return;
 
         try {
-            showNotification('Please sign the Agent Approval in MetaMask...', 'info');
+            showNotification('Generating Secure Agent...', 'info');
 
-            // 1. Construct EIP-712 Data for Hyperliquid "Approve Agent"
-            // This MUST match Hyperliquid's expected format exactly.
+            // 1. Ask Backend to Generate Agent
+            const genRes = await axios.post(`${API_BASE_URL}/generate-agent`, {
+                user_address: userWallet.address
+            });
+            const agentAddress = genRes.data.agentAddress;
+
+            // 2. Sign EIP-712 "Approve Agent"
             const domain = {
                 name: "HyperliquidSignTransaction",
                 version: "1",
-                chainId: HYPERLIQUID_MAINNET_ID,
+                chainId: 42161,
                 verifyingContract: "0x0000000000000000000000000000000000000000"
             };
 
             const types = {
-                "HyperliquidTransaction:ApproveAgent": [
-                    { name: "hyperliquidChain", type: "string" },
-                    { name: "agentAddress", type: "address" },
-                    { name: "agentName", type: "string" },
-                    { name: "nonce", type: "uint64" }
+                "Agent": [
+                    { name: "source", type: "string" },
+                    { name: "connectionId", type: "bytes32" },
                 ]
             };
 
-            const nonce = Date.now();
+            const connectionId = ethers.keccak256(agentAddress);
             const message = {
-                hyperliquidChain: "Mainnet",
-                agentAddress: agentWallet.address,
-                agentName: "X/CHANGE Agent",
-                nonce: nonce
+                source: "https://hyperliquid.xyz",
+                connectionId: connectionId
             };
 
-            // 2. Request User Signature
+            showNotification('Please sign in MetaMask...', 'info');
             const signatureRaw = await userWallet.signer.signTypedData(domain, types, message);
             const signature = ethers.Signature.from(signatureRaw);
 
-            // 3. Send to Backend to Relay to Hyperliquid
-            showNotification('Activating Agent on-chain...', 'info');
-
-            const response = await axios.post(`${API_BASE_URL}/approve-agent`, {
+            // 3. Send Signature to Backend
+            showNotification('Registering Agent on-chain...', 'info');
+            await axios.post(`${API_BASE_URL}/approve-agent`, {
                 user_wallet_address: userWallet.address,
-                agent_address: agentWallet.address,
-                agent_name: "X/CHANGE Agent",
-                nonce: nonce,
-                signature: {
-                    r: signature.r,
-                    s: signature.s,
-                    v: signature.v
-                }
+                agent_address: agentAddress,
+                agent_name: "xchange_bot",
+                nonce: Date.now(),
+                signature: { r: signature.r, s: signature.s, v: signature.v }
             });
 
-            if (response.data.status === 'success') {
-                setIsAgentActivated(true);
-                localStorage.setItem('agent_activated', 'true');
-                showNotification('Agent Activated! You can now trade.', 'success');
-                fetchPositions();
-            }
+            setIsAgentActivated(true);
+            showNotification('Agent Activated! You can now trade.', 'success');
 
         } catch (error) {
             console.error('Activation Error:', error);
-            showNotification('Failed to activate agent. Check console.', 'error');
+            showNotification('Activation Failed. See console.', 'error');
         }
     };
 
-    // --- TRADING ---
+    // --- TRADING (VIA BACKEND) ---
     const executeTrade = async (isBuy) => {
-        if (!isAgentActivated || !selectedAsset) return;
+        if (!isAgentActivated || !selectedAsset) return showNotification("Activate Agent first", "error");
+
         setIsTrading(true);
         try {
+            // Note: We send usd_size and leverage. Backend handles the math.
             await axios.post(`${API_BASE_URL}/trade`, {
-                user_agent_private_key: agentWallet.privateKey,
-                user_main_wallet_address: userWallet.address,
+                user_address: userWallet.address,
                 coin: selectedAsset.symbol,
                 is_buy: isBuy,
                 usd_size: parseFloat(usdSize),
                 leverage: leverage
             });
+
             showNotification(`Order Placed: ${isBuy ? 'LONG' : 'SHORT'} ${selectedAsset.symbol}`, 'success');
             setTimeout(fetchPositions, 1000);
         } catch (error) {
-            showNotification(error.response?.data?.detail || 'Trade Failed', 'error');
+            const msg = error.response?.data?.detail || 'Trade Failed';
+            showNotification(msg, 'error');
         } finally {
             setIsTrading(false);
         }
     };
 
     const closePosition = async (coin) => {
-        // FIXED: Added 'window.' to confirm()
         if (!window.confirm(`Close ${coin} position?`)) return;
 
         try {
             await axios.post(`${API_BASE_URL}/close-position`, {
-                user_agent_private_key: agentWallet.privateKey,
-                user_main_wallet_address: userWallet.address,
+                user_address: userWallet.address,
                 coin: coin
             });
             showNotification('Position Closed', 'success');
