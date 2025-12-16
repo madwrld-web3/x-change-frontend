@@ -194,6 +194,7 @@ function App() {
             console.log("Agent address:", agentAddress);
 
             // EIP-712 typed data for Hyperliquid agent approval
+            // CRITICAL: domain chainId must match the connected network (Arbitrum)
             const typedData = {
                 types: {
                     EIP712Domain: [
@@ -213,7 +214,7 @@ function App() {
                 domain: {
                     name: "HyperliquidSignTransaction",
                     version: "1",
-                    chainId: "0x66eee", // Hyperliquid chainId (421614)
+                    chainId: 42161, // Arbitrum chainId (user's connected network)
                     verifyingContract: "0x0000000000000000000000000000000000000000"
                 },
                 message: {
@@ -224,11 +225,12 @@ function App() {
                 }
             };
 
-            // Sign with eth_signTypedData_v4 (bypasses MetaMask chainId check)
-            const signature = await window.ethereum.request({
-                method: "eth_signTypedData_v4",
-                params: [userWallet.address, JSON.stringify(typedData)]
-            });
+            // Sign with user's signer
+            const signature = await userWallet.signer.signTypedData(
+                typedData.domain,
+                { "HyperliquidTransaction:ApproveAgent": typedData.types["HyperliquidTransaction:ApproveAgent"] },
+                typedData.message
+            );
 
             console.log("Signature obtained, submitting to Hyperliquid...");
 
