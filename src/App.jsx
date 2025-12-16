@@ -19,9 +19,9 @@ const USDC_ABI = [
 
 function App() {
     const [userWallet, setUserWallet] = useState(null);
-    const [accountStatus, setAccountStatus] = useState(null);
+    const [accountStatus, setAccountStatus] = useState(null); 
     const [isCheckingStatus, setIsCheckingStatus] = useState(false);
-
+    
     // Trade State
     const [assets, setAssets] = useState([]);
     const [selectedAsset, setSelectedAsset] = useState(null);
@@ -29,8 +29,8 @@ function App() {
     const [usdSize, setUsdSize] = useState('100');
     const [leverage, setLeverage] = useState(1);
     const [isTrading, setIsTrading] = useState(false);
-
-    // Agent State - now tracks approval status
+    
+    // Agent State
     const [agentAddress, setAgentAddress] = useState(null);
     const [agentApproved, setAgentApproved] = useState(false);
     const [isApprovingAgent, setIsApprovingAgent] = useState(false);
@@ -93,6 +93,7 @@ function App() {
                 }
             }
 
+            console.log("Connected wallet:", address);
             setUserWallet({ address, signer, provider });
             checkAccountStatus(address);
             await generateAgentAddress(address);
@@ -108,6 +109,7 @@ function App() {
             });
             setAgentAddress(response.data.agentAddress);
             console.log("Generated agent address:", response.data.agentAddress);
+            console.log("User address:", userAddress);
         } catch (error) {
             console.error("Failed to generate agent:", error);
         }
@@ -139,16 +141,16 @@ function App() {
             const provider = new BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
             const usdcContract = new Contract(ARBITRUM_USDC_ADDRESS, USDC_ABI, signer);
-
+            
             const decimals = await usdcContract.decimals();
             const amount = ethers.parseUnits(depositAmount, decimals);
-
+            
             setDepositMessage("Approve transaction...");
             const tx = await usdcContract.transfer(HYPERLIQUID_BRIDGE_ADDRESS, amount);
-
+            
             setDepositMessage("Processing...");
             await tx.wait();
-
+            
             setDepositMessage("✓ Deposit confirmed!");
             setTimeout(() => {
                 setShowDepositModal(false);
@@ -171,14 +173,19 @@ function App() {
 
         setIsApprovingAgent(true);
         try {
-            // Step 1: Create EIP-712 signature for approveAgent
             const nonce = Date.now();
             const agentName = "X/CHANGE Trading Agent";
 
+            console.log("=== AGENT APPROVAL DEBUG ===");
+            console.log("User wallet address:", userWallet.address);
+            console.log("Agent address:", agentAddress);
+            console.log("Nonce:", nonce);
+
+            // CRITICAL FIX: The domain must use the Hyperliquid chain ID, not Arbitrum
             const domain = {
                 name: "HyperliquidSignTransaction",
                 version: "1",
-                chainId: 42161, // Arbitrum
+                chainId: 421614,  // Hyperliquid's chain ID (0x66eee in hex)
                 verifyingContract: "0x0000000000000000000000000000000000000000"
             };
 
@@ -193,15 +200,16 @@ function App() {
 
             const value = {
                 hyperliquidChain: "Mainnet",
-                agentAddress: agentAddress,
+                agentAddress: agentAddress.toLowerCase(),  // Ensure lowercase
                 agentName: agentName,
                 nonce: nonce
             };
 
-            console.log("Requesting signature for agent approval...");
-            const signature = await userWallet.signer.signTypedData(domain, types, value);
+            console.log("Signing with domain:", domain);
+            console.log("Signing with value:", value);
 
-            // Parse signature
+            const signature = await userWallet.signer.signTypedData(domain, types, value);
+            
             const sig = ethers.Signature.from(signature);
             const formattedSignature = {
                 r: sig.r,
@@ -209,16 +217,18 @@ function App() {
                 v: sig.v
             };
 
-            console.log("Signature obtained, submitting to Hyperliquid...");
+            console.log("Signature created:", formattedSignature);
 
-            // Step 2: Submit to backend
+            // Submit to backend
             const response = await axios.post(`${API_BASE_URL}/approve-agent`, {
-                user_wallet_address: userWallet.address,
-                agent_address: agentAddress,
+                user_wallet_address: userWallet.address.toLowerCase(),  // Ensure lowercase
+                agent_address: agentAddress.toLowerCase(),  // Ensure lowercase
                 agent_name: agentName,
                 nonce: nonce,
                 signature: formattedSignature
             });
+
+            console.log("Backend response:", response.data);
 
             if (response.data.status === "success") {
                 setAgentApproved(true);
@@ -228,6 +238,7 @@ function App() {
             }
         } catch (error) {
             console.error("Agent activation error:", error);
+            console.error("Error details:", error.response?.data);
             const errorMsg = error.response?.data?.detail || error.message || "Failed to activate agent";
             showNotification(`Activation failed: ${errorMsg}`, "error");
         } finally {
@@ -237,12 +248,12 @@ function App() {
 
     const executeTrade = async (isBuy) => {
         if (!userWallet || !selectedAsset) return;
-
+        
         if (!agentApproved) {
             showNotification("Please activate your trading agent first", "error");
             return;
         }
-
+        
         setIsTrading(true);
         try {
             const response = await axios.post(`${API_BASE_URL}/trade`, {
@@ -252,15 +263,14 @@ function App() {
                 usd_size: parseFloat(usdSize),
                 leverage: leverage
             });
-
+            
             showNotification(`✓ ${isBuy ? 'Long' : 'Short'} position opened!`, "success");
             fetchPositions(userWallet.address);
         } catch (error) {
             console.error("Trade error:", error);
             const errorMsg = error.response?.data?.detail || error.message || "Trade failed";
-
-            // Check if it's an agent approval issue
-            if (errorMsg.toLowerCase().includes("agent") ||
+            
+            if (errorMsg.toLowerCase().includes("agent") || 
                 errorMsg.toLowerCase().includes("does not exist") ||
                 errorMsg.toLowerCase().includes("api wallet")) {
                 setAgentApproved(false);
@@ -285,17 +295,17 @@ function App() {
             setIsLoadingPositions(false);
         }
     };
-
+    
     const closePosition = async (coin) => {
-        if (!window.confirm(`Close ${coin} position?`)) return;
+        if(!window.confirm(`Close ${coin} position?`)) return;
         try {
-            await axios.post(`${API_BASE_URL}/close-position`, {
-                user_address: userWallet.address,
-                coin
+            await axios.post(`${API_BASE_URL}/close-position`, { 
+                user_address: userWallet.address, 
+                coin 
             });
             showNotification("Position closed", "success");
             fetchPositions(userWallet.address);
-        } catch (e) {
+        } catch(e) {
             const errorMsg = e.response?.data?.detail || "Failed to close";
             showNotification(errorMsg, "error");
         }
@@ -306,11 +316,10 @@ function App() {
         setTimeout(() => setNotification(null), 5000);
     };
 
-    const filteredAssets = assets.filter(a =>
+    const filteredAssets = assets.filter(a => 
         a.symbol.toLowerCase().includes(searchFilter.toLowerCase())
     );
 
-    // DEPOSIT COMPONENT
     const DepositComponent = () => (
         <div className="max-w-md w-full bg-gray-900/50 border border-gray-800 p-8 rounded-xl backdrop-blur-sm mx-auto">
             <div className="text-center mb-8">
@@ -319,18 +328,18 @@ function App() {
             </div>
             <div className="space-y-4">
                 <div className="relative">
-                    <input
-                        type="number"
-                        placeholder="Min 10.0"
-                        value={depositAmount}
-                        onChange={(e) => setDepositAmount(e.target.value)}
-                        className="w-full bg-black border border-gray-700 p-4 rounded text-white font-mono"
+                    <input 
+                        type="number" 
+                        placeholder="Min 10.0" 
+                        value={depositAmount} 
+                        onChange={(e) => setDepositAmount(e.target.value)} 
+                        className="w-full bg-black border border-gray-700 p-4 rounded text-white font-mono" 
                     />
                     <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-bold">USDC</span>
                 </div>
-                <button
-                    onClick={handleDeposit}
-                    disabled={isDepositing}
+                <button 
+                    onClick={handleDeposit} 
+                    disabled={isDepositing} 
                     className="w-full py-4 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold rounded"
                 >
                     {isDepositing ? "Processing..." : "Deposit"}
@@ -339,8 +348,8 @@ function App() {
                     <div className="text-center text-blue-400 text-xs">{depositMessage}</div>
                 )}
                 {showDepositModal && accountStatus?.exists && (
-                    <button
-                        onClick={() => setShowDepositModal(false)}
+                    <button 
+                        onClick={() => setShowDepositModal(false)} 
                         className="w-full text-xs text-gray-500 mt-2"
                     >
                         Cancel
@@ -359,16 +368,16 @@ function App() {
                 <div className="flex gap-4 items-center">
                     {userWallet ? (
                         <div className="flex gap-3 items-center">
-                            <button
-                                onClick={() => setShowDepositModal(true)}
+                            <button 
+                                onClick={() => setShowDepositModal(true)} 
                                 className="px-3 py-2 bg-gray-900 border border-gray-800 hover:border-blue-500 text-xs font-bold flex gap-2 items-center"
                             >
                                 <Wallet size={12} /> DEPOSIT
                             </button>
-
+                            
                             {!agentApproved && (
-                                <button
-                                    onClick={activateAgent}
+                                <button 
+                                    onClick={activateAgent} 
                                     disabled={isApprovingAgent}
                                     className="px-4 py-2 bg-yellow-500 text-black font-bold text-xs hover:bg-yellow-400 disabled:opacity-50 flex gap-2 items-center"
                                 >
@@ -376,28 +385,28 @@ function App() {
                                     {isApprovingAgent ? "ACTIVATING..." : "ACTIVATE TRADING AGENT"}
                                 </button>
                             )}
-
+                            
                             {agentApproved && (
                                 <div className="px-3 py-1 bg-green-900/20 border border-green-500/50 text-green-500 text-xs font-bold flex gap-2 items-center rounded">
                                     <CheckCircle size={12} /> AGENT ACTIVE
                                 </div>
                             )}
-
+                            
                             {accountValue && (
                                 <div className="text-right hidden md:block">
                                     <div className="text-[10px] text-gray-500">EQUITY</div>
                                     <div className="font-bold">${accountValue.total_value?.toFixed(2)}</div>
                                 </div>
                             )}
-
+                            
                             <div className="px-3 py-2 bg-gray-900 border border-gray-800 text-xs font-bold flex gap-2 items-center">
                                 <div className="w-2 h-2 rounded-full bg-green-500"></div>
                                 {userWallet.address.slice(0, 6)}...
                             </div>
                         </div>
                     ) : (
-                        <button
-                            onClick={connectWallet}
+                        <button 
+                            onClick={connectWallet} 
                             className="px-6 py-2 bg-white text-black font-bold text-xs hover:bg-gray-200"
                         >
                             CONNECT WALLET
@@ -407,10 +416,11 @@ function App() {
             </header>
 
             {notification && (
-                <div className={`fixed top-20 right-6 z-50 p-4 border flex items-center gap-3 rounded shadow-lg ${notification.type === 'error'
-                        ? 'bg-red-900/90 border-red-500 text-red-100'
+                <div className={`fixed top-20 right-6 z-50 p-4 border flex items-center gap-3 rounded shadow-lg ${
+                    notification.type === 'error' 
+                        ? 'bg-red-900/90 border-red-500 text-red-100' 
                         : 'bg-green-900/90 border-green-500 text-green-100'
-                    }`}>
+                }`}>
                     {notification.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle size={18} />}
                     <span className="text-sm font-bold">{notification.message}</span>
                 </div>
@@ -422,8 +432,8 @@ function App() {
                         <Wallet size={64} className="text-gray-700 mb-6" />
                         <h2 className="text-3xl font-black mb-4">Connect to Trade</h2>
                         <p className="text-gray-500 mb-6">Connect your wallet to start trading perpetuals on Hyperliquid</p>
-                        <button
-                            onClick={connectWallet}
+                        <button 
+                            onClick={connectWallet} 
                             className="px-8 py-3 bg-white text-black font-bold text-lg hover:bg-gray-200"
                         >
                             Connect Wallet
@@ -440,24 +450,24 @@ function App() {
                     </div>
                 ) : (
                     <>
-                        {/* Asset List Sidebar */}
                         <div className="w-64 border-r border-gray-800 flex flex-col hidden lg:flex">
                             <div className="p-3 border-b border-gray-800 relative">
                                 <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-gray-600" size={14} />
-                                <input
-                                    className="w-full bg-gray-900 border border-gray-700 py-1 pl-8 pr-2 text-xs text-white focus:outline-none"
-                                    placeholder="Search..."
-                                    value={searchFilter}
-                                    onChange={e => setSearchFilter(e.target.value)}
+                                <input 
+                                    className="w-full bg-gray-900 border border-gray-700 py-1 pl-8 pr-2 text-xs text-white focus:outline-none" 
+                                    placeholder="Search..." 
+                                    value={searchFilter} 
+                                    onChange={e => setSearchFilter(e.target.value)} 
                                 />
                             </div>
                             <div className="flex-1 overflow-y-auto">
                                 {filteredAssets.map(asset => (
-                                    <button
-                                        key={asset.symbol}
-                                        onClick={() => setSelectedAsset(asset)}
-                                        className={`w-full px-4 py-3 flex justify-between items-center border-b border-gray-900 hover:bg-gray-900/50 ${selectedAsset?.symbol === asset.symbol ? 'bg-gray-900 border-l-2 border-l-white' : ''
-                                            }`}
+                                    <button 
+                                        key={asset.symbol} 
+                                        onClick={() => setSelectedAsset(asset)} 
+                                        className={`w-full px-4 py-3 flex justify-between items-center border-b border-gray-900 hover:bg-gray-900/50 ${
+                                            selectedAsset?.symbol === asset.symbol ? 'bg-gray-900 border-l-2 border-l-white' : ''
+                                        }`}
                                     >
                                         <div className="text-left">
                                             <div className="font-bold text-sm">{asset.symbol}</div>
@@ -471,7 +481,6 @@ function App() {
                             </div>
                         </div>
 
-                        {/* Main Chart Area */}
                         <div className="flex-1 flex flex-col bg-black">
                             {selectedAsset && (
                                 <div className="h-2/3 p-6 flex flex-col border-b border-gray-800">
@@ -483,18 +492,18 @@ function App() {
                                         <ResponsiveContainer width="100%" height="100%">
                                             <LineChart data={chartData}>
                                                 <XAxis dataKey="time" hide />
-                                                <YAxis
-                                                    domain={['auto', 'auto']}
-                                                    orientation="right"
-                                                    tick={{ fill: '#333', fontSize: 10 }}
-                                                    stroke="#333"
+                                                <YAxis 
+                                                    domain={['auto', 'auto']} 
+                                                    orientation="right" 
+                                                    tick={{ fill: '#333', fontSize: 10 }} 
+                                                    stroke="#333" 
                                                 />
-                                                <Line
-                                                    type="stepAfter"
-                                                    dataKey="price"
-                                                    stroke="#fff"
-                                                    strokeWidth={1}
-                                                    dot={false}
+                                                <Line 
+                                                    type="stepAfter" 
+                                                    dataKey="price" 
+                                                    stroke="#fff" 
+                                                    strokeWidth={1} 
+                                                    dot={false} 
                                                 />
                                             </LineChart>
                                         </ResponsiveContainer>
@@ -502,14 +511,14 @@ function App() {
                                 </div>
                             )}
 
-                            {/* Positions Table */}
                             <div className="flex-1 bg-black p-4 overflow-auto">
                                 <div className="flex justify-between items-center mb-4">
                                     <h3 className="text-sm font-bold text-gray-500">OPEN POSITIONS</h3>
-                                    <RefreshCw
-                                        size={14}
-                                        className={`text-gray-600 cursor-pointer hover:text-white ${isLoadingPositions ? 'animate-spin' : ''
-                                            }`}
+                                    <RefreshCw 
+                                        size={14} 
+                                        className={`text-gray-600 cursor-pointer hover:text-white ${
+                                            isLoadingPositions ? 'animate-spin' : ''
+                                        }`}
                                         onClick={() => fetchPositions(userWallet.address)}
                                     />
                                 </div>
@@ -528,19 +537,21 @@ function App() {
                                         {positions.map((pos, i) => (
                                             <tr key={i} className="border-b border-gray-900 hover:bg-gray-900/30">
                                                 <td className="py-3 font-bold">{pos.coin}</td>
-                                                <td className={`py-3 text-right font-bold ${pos.side === 'LONG' ? 'text-green-500' : 'text-red-500'
-                                                    }`}>
+                                                <td className={`py-3 text-right font-bold ${
+                                                    pos.side === 'LONG' ? 'text-green-500' : 'text-red-500'
+                                                }`}>
                                                     {pos.size > 0 ? '+' : ''}{pos.size.toFixed(4)}
                                                 </td>
                                                 <td className="py-3 text-right">${pos.entry_price.toFixed(2)}</td>
                                                 <td className="py-3 text-right">${pos.mark_price.toFixed(2)}</td>
-                                                <td className={`py-3 text-right font-bold ${pos.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'
-                                                    }`}>
+                                                <td className={`py-3 text-right font-bold ${
+                                                    pos.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'
+                                                }`}>
                                                     ${pos.unrealized_pnl.toFixed(2)}
                                                 </td>
                                                 <td className="py-3 text-right">
-                                                    <button
-                                                        onClick={() => closePosition(pos.coin)}
+                                                    <button 
+                                                        onClick={() => closePosition(pos.coin)} 
                                                         className="text-[10px] px-2 py-1 bg-red-900/20 border border-red-500/50 rounded hover:bg-red-900/40"
                                                     >
                                                         CLOSE
@@ -560,32 +571,31 @@ function App() {
                             </div>
                         </div>
 
-                        {/* Trading Panel */}
                         <div className="w-80 border-l border-gray-800 p-6 flex flex-col gap-6 bg-black">
                             <div>
                                 <label className="text-[10px] font-bold text-gray-500 block mb-2">
                                     SIZE (USD)
                                 </label>
-                                <input
-                                    type="number"
-                                    value={usdSize}
-                                    onChange={e => setUsdSize(e.target.value)}
-                                    className="w-full bg-gray-900 border border-gray-700 p-3 text-lg font-bold text-white focus:border-white focus:outline-none"
+                                <input 
+                                    type="number" 
+                                    value={usdSize} 
+                                    onChange={e => setUsdSize(e.target.value)} 
+                                    className="w-full bg-gray-900 border border-gray-700 p-3 text-lg font-bold text-white focus:border-white focus:outline-none" 
                                 />
                             </div>
-
+                            
                             <div>
                                 <div className="flex justify-between mb-2">
                                     <label className="text-[10px] font-bold text-gray-500">LEVERAGE</label>
                                     <span className="text-xs font-bold">{leverage}x</span>
                                 </div>
-                                <input
-                                    type="range"
-                                    min="1"
-                                    max="50"
-                                    value={leverage}
-                                    onChange={e => setLeverage(Number(e.target.value))}
-                                    className="w-full accent-white"
+                                <input 
+                                    type="range" 
+                                    min="1" 
+                                    max="50" 
+                                    value={leverage} 
+                                    onChange={e => setLeverage(Number(e.target.value))} 
+                                    className="w-full accent-white" 
                                 />
                             </div>
 
@@ -595,19 +605,19 @@ function App() {
                                     <p>Click "Activate Trading Agent" to enable trading</p>
                                 </div>
                             )}
-
+                            
                             <div className="mt-auto space-y-3">
-                                <button
-                                    onClick={() => executeTrade(true)}
-                                    disabled={isTrading || !agentApproved}
+                                <button 
+                                    onClick={() => executeTrade(true)} 
+                                    disabled={isTrading || !agentApproved} 
                                     className="w-full py-4 bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-black font-black flex justify-center items-center gap-2"
                                 >
                                     {isTrading ? <RefreshCw className="animate-spin" size={18} /> : <TrendingUp size={18} />}
                                     BUY / LONG
                                 </button>
-                                <button
-                                    onClick={() => executeTrade(false)}
-                                    disabled={isTrading || !agentApproved}
+                                <button 
+                                    onClick={() => executeTrade(false)} 
+                                    disabled={isTrading || !agentApproved} 
                                     className="w-full py-4 bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-black font-black flex justify-center items-center gap-2"
                                 >
                                     {isTrading ? <RefreshCw className="animate-spin" size={18} /> : <TrendingDown size={18} />}
