@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [
     react(),
     nodePolyfills({
-      // This ensures Buffer and process are available for ethers/viem
+      // Essential for Hyperliquid/Viem to work in the browser
       globals: {
         Buffer: true,
         global: true,
@@ -15,16 +15,22 @@ export default defineConfig({
     }),
   ],
   build: {
-    outDir: 'build',
+    outDir: 'build', // Matches your Vercel output setting
     commonjsOptions: {
-      transformMixedEsModules: true, // Helps with mixed module types in web3 libs
+      transformMixedEsModules: true,
     },
     rollupOptions: {
-      // This suppresses the "annotation" warning you saw in the logs
+      // This function intercepts and silences specific warnings
       onwarn(warning, warn) {
+        // Ignore the "annotation" warning from micro-eth-signer/viem
+        if (warning.code === 'INVALID_ANNOTATION') {
+          return;
+        }
+        // Ignore "Module level directive" warnings (common in React server components)
         if (warning.code === 'MODULE_LEVEL_DIRECTIVE') {
           return;
         }
+        // Log everything else
         warn(warning);
       },
     },
