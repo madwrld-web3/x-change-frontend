@@ -26,6 +26,8 @@ function App() {
     const [userWallet, setUserWallet] = useState(null);
     const [accountStatus, setAccountStatus] = useState(null); 
     const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+    
+    // We default to false, but if the backend trade works, we know we are good.
     const [isAgentActivated, setIsAgentActivated] = useState(false);
 
     // Trading State
@@ -121,6 +123,9 @@ function App() {
             setAccountStatus(response.data);
 
             if (response.data.exists) {
+                // Assuming if they exist, they might have an agent. 
+                // We'll let them trade, if it fails, we prompt activation.
+                setIsAgentActivated(true); 
                 const interval = setInterval(() => fetchPositions(address), 5000);
                 return () => clearInterval(interval);
             } else {
@@ -147,14 +152,11 @@ function App() {
         try {
             const provider = new BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
-            // Contract creation will now succeed with lowercase address
             const usdcContract = new Contract(ARBITRUM_USDC_ADDRESS, USDC_ABI, signer);
 
             const amountInWei = ethers.parseUnits(depositAmount, 6);
 
             setDepositMessage("Please sign the transaction in your wallet...");
-
-            // Transfer will now succeed with lowercase address
             const tx = await usdcContract.transfer(HYPERLIQUID_BRIDGE_ADDRESS, amountInWei);
 
             setDepositMessage("Transaction Sent! Waiting for confirmation...");
@@ -187,7 +189,6 @@ function App() {
         } catch (error) {
             console.error(error);
             setIsDepositing(false);
-            // Enhanced error reporting
             const msg = error.reason || error.message || "Unknown Error";
             setDepositMessage("Deposit failed: " + msg.slice(0, 60) + "...");
         }
@@ -198,7 +199,8 @@ function App() {
         if (!userWallet) return;
 
         try {
-            showNotification('Generating Secure Agent...', 'info');
+            showNotification('Deriving Agent...', 'info');
+            // 1. Get the Deterministic Agent Address from Backend
             const genRes = await axios.post(`${API_BASE_URL}/generate-agent`, {
                 user_address: userWallet.address
             });
@@ -224,11 +226,11 @@ function App() {
                 connectionId: connectionId
             };
 
-            showNotification('Please sign in MetaMask...', 'info');
+            showNotification('Please sign in MetaMask to Approve Agent...', 'info');
             const signatureRaw = await userWallet.signer.signTypedData(domain, types, message);
             const signature = ethers.Signature.from(signatureRaw);
 
-            showNotification('Registering Agent on-chain...', 'info');
+            showNotification('Confirming on-chain...', 'info');
             await axios.post(`${API_BASE_URL}/approve-agent`, {
                 user_wallet_address: userWallet.address,
                 agent_address: agentAddress,
@@ -238,7 +240,7 @@ function App() {
             });
 
             setIsAgentActivated(true);
-            showNotification('Agent Activated! You can now trade.', 'success');
+            showNotification('Agent Authorized! You can now trade.', 'success');
 
         } catch (error) {
             console.error('Activation Error:', error);
@@ -248,8 +250,6 @@ function App() {
 
     // --- TRADING LOGIC ---
     const executeTrade = async (isBuy) => {
-        if (!isAgentActivated || !selectedAsset) return showNotification("Activate Agent first", "error");
-
         setIsTrading(true);
         try {
             await axios.post(`${API_BASE_URL}/trade`, {
@@ -263,8 +263,16 @@ function App() {
             showNotification(`Order Placed: ${isBuy ? 'LONG' : 'SHORT'} ${selectedAsset.symbol}`, 'success');
             setTimeout(() => fetchPositions(userWallet.address), 1000);
         } catch (error) {
+            console.error(error);
             const msg = error.response?.data?.detail || 'Trade Failed';
-            showNotification(msg, 'error');
+            
+            // If the error mentions User/API Wallet, it means agent needs approval
+            if (msg.includes("User or API Wallet") || msg.includes("does not exist")) {
+                setIsAgentActivated(false); // Force button to appear
+                showNotification("Agent not authorized. Please Click 'Activate Agent'", "error");
+            } else {
+                showNotification(msg, "error");
+            }
         } finally {
             setIsTrading(false);
         }
@@ -371,16 +379,17 @@ function App() {
                 <div className="flex gap-4 items-center">
                     {userWallet ? (
                         <div className="flex gap-3 items-center">
-                             {/* MANUAL DEPOSIT BUTTON */}
                              <button onClick={() => setShowDepositModal(true)} className="px-3 py-2 bg-gray-900 border border-gray-800 hover:border-blue-500 text-xs font-bold flex gap-2 items-center">
                                 <Wallet size={12} /> DEPOSIT
                             </button>
 
+                            {/* AGENT BUTTON ONLY SHOWS IF NOT ACTIVATED */}
                             {accountStatus?.exists && !isAgentActivated && (
                                 <button onClick={activateAgent} className="px-4 py-2 bg-yellow-500 text-black font-bold text-xs hover:bg-yellow-400">
                                     ACTIVATE AGENT
                                 </button>
                             )}
+
                             {accountValue && (
                                 <div className="text-right hidden md:block">
                                     <div className="text-[10px] text-gray-500">EQUITY</div>
@@ -424,7 +433,7 @@ function App() {
                     </div>
                 ) : 
                 
-                // SCENARIO 2: CHECKING STATUS (LOADING)
+                // SCENARIO 2: CHECKING STATUS
                 isCheckingStatus ? (
                     <div className="flex flex-1 flex-col items-center justify-center">
                         <Loader2 className="animate-spin text-blue-500 mb-4" size={48} />
@@ -432,14 +441,14 @@ function App() {
                     </div>
                 ) :
 
-                // SCENARIO 3: DEPOSIT MODAL (User doesn't exist OR clicked Deposit button)
+                // SCENARIO 3: DEPOSIT MODAL
                 (showDepositModal) ? (
                     <div className="flex flex-1 flex-col items-center justify-center p-8 bg-black">
                         <DepositComponent />
                     </div>
                 ) : (
                     
-                // SCENARIO 4: TRADING DASHBOARD (Default)
+                // SCENARIO 4: TRADING DASHBOARD
                     <>
                         {/* ASSET LIST */}
                         <div className="w-64 border-r border-gray-800 flex flex-col hidden lg:flex">
@@ -559,14 +568,14 @@ function App() {
                             <div className="mt-auto space-y-3">
                                 <button
                                     onClick={() => executeTrade(true)}
-                                    disabled={isTrading || !isAgentActivated}
+                                    disabled={isTrading}
                                     className="w-full py-4 bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-black font-black flex justify-center gap-2"
                                 >
                                     {isTrading ? <RefreshCw className="animate-spin" /> : <TrendingUp />} BUY / LONG
                                 </button>
                                 <button
                                     onClick={() => executeTrade(false)}
-                                    disabled={isTrading || !isAgentActivated}
+                                    disabled={isTrading}
                                     className="w-full py-4 bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-black font-black flex justify-center gap-2"
                                 >
                                     {isTrading ? <RefreshCw className="animate-spin" /> : <TrendingDown />} SELL / SHORT
