@@ -230,7 +230,8 @@ function App() {
     };
     
     const closePosition = async (coin) => {
-        if(!confirm("Close?")) return;
+        // FIX APPLIED HERE: Added 'window.' before confirm
+        if(!window.confirm("Close?")) return;
         try {
             await axios.post(`${API_BASE_URL}/close-position`, { user_address: userWallet.address, coin });
             showNotification("Closed", "success");
